@@ -178,9 +178,8 @@ def test_poison_id_is_still_isolated_after_abort_logic(db_session):
     add_games(db_session, 50)
 
     def fail_on_poison(ids, n):
-        if 1023 in ids:
+        if 1000 in ids:
             raise ConnectorError("poison id")
-        return None  # signal prices available by returning None (caller gets them)
 
     fake = FakeSteam({a: priced(a) for a in range(1000, 1050)})
     fake.fail = fail_on_poison
