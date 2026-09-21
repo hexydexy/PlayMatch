@@ -61,6 +61,8 @@ if not any(isinstance(f, _RedactKeyFilter) for f in _httpx_logger.filters):
 URL = "https://api.steampowered.com/IStoreService/GetAppList/v1/"
 PAGE_SIZE = 50000
 COMMIT_EVERY = 5000
+MAX_APP_ID = 2**31 - 1  # steam_app_id is an Integer column
+MAX_NAME_LEN = 300  # games.title is String(300)
 
 
 def parse_page(body: dict) -> tuple[list[tuple[int, str]], bool, int | None]:
@@ -91,7 +93,7 @@ def fetch_all(key: str) -> list[tuple[int, str]]:
 
 
 def sync(s: Session, key: str | None = None, fetch=None) -> dict:
-    """Insert new Steam games and refresh renamed ones. Never raises."""
+    """Insert new Steam games and refresh renamed ones. Never raises: failures are logged and returned as `skipped`."""
     key = config.STEAM_API_KEY if key is None else key
     if not key:
         log.warning("STEAM_API_KEY is not set; skipping catalog sync")
@@ -103,24 +105,38 @@ def sync(s: Session, key: str | None = None, fetch=None) -> dict:
         service.log_job(s, "catalog_sync", "steam", "-", "error", str(e))
         return {"skipped": f"error: {e}"}
 
-    existing = {g.steam_app_id: g for g in s.scalars(select(Game).where(Game.steam_app_id.is_not(None)))}
-    added = renamed = pending = 0
-    for app_id, name in apps:
-        g = existing.get(app_id)
-        if g is None:
-            g = Game(title=name, norm_title=normalize(name), steam_app_id=app_id)
-            s.add(g)
-            existing[app_id] = g
-            added += 1
-        elif g.title != name:
-            g.title, g.norm_title = name, normalize(name)
-            renamed += 1
-        else:
-            continue
-        pending += 1
-        if pending >= COMMIT_EVERY:
-            s.commit()
-            pending = 0
-    s.commit()
-    service.log_job(s, "catalog_sync", "steam", "-", "ok", f"{added} added, {renamed} renamed")
-    return {"added": added, "renamed": renamed, "total": len(apps)}
+    try:
+        existing = {g.steam_app_id: g for g in s.scalars(select(Game).where(Game.steam_app_id.is_not(None)))}
+        added = renamed = pending = invalid = 0
+        for app_id, name in apps:
+            if not 1 <= app_id <= MAX_APP_ID:  # would not fit the Integer column
+                invalid += 1
+                continue
+            name = name.replace("\x00", "")[:MAX_NAME_LEN]  # Postgres rejects NUL; the column is String(300)
+            g = existing.get(app_id)
+            if g is None:
+                g = Game(title=name, norm_title=normalize(name), steam_app_id=app_id)
+                s.add(g)
+                existing[app_id] = g
+                added += 1
+            elif g.title != name:
+                g.title, g.norm_title = name, normalize(name)
+                renamed += 1
+            else:
+                continue
+            pending += 1
+            if pending >= COMMIT_EVERY:
+                s.commit()
+                pending = 0
+        s.commit()
+        service.log_job(s, "catalog_sync", "steam", "-", "ok", f"{added} added, {renamed} renamed")
+    except Exception as e:
+        log.exception("catalog sync failed while saving: %s", e)
+        s.rollback()
+        service.log_job(s, "catalog_sync", "steam", "-", "error", str(e))
+        return {"skipped": f"error: {e}"}
+    report = {"added": added, "renamed": renamed, "total": len(apps)}
+    if invalid:
+        log.warning("catalog sync skipped %d apps with an out-of-range id", invalid)
+        report["invalid"] = invalid
+    return report

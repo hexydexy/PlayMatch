@@ -127,3 +127,34 @@ def test_fetch_all_redacts_api_key_in_logs(monkeypatch, caplog):
     assert "SECRETKEY123" not in caplog.text
     assert "key=REDACTED" in caplog.text
     assert "include_games=true" in caplog.text
+
+
+def test_sync_cleans_and_truncates_names_before_inserting(db_session):
+    long_name = "x" * 400
+    rep = catalog.sync(db_session, key="k", fetch=lambda key: [(1, "Bad\x00Name"), (2, long_name)])
+    assert rep == {"added": 2, "renamed": 0, "total": 2}
+    assert db_session.query(Game).filter_by(steam_app_id=1).one().title == "BadName"
+    assert db_session.query(Game).filter_by(steam_app_id=2).one().title == "x" * 300
+
+
+def test_sync_skips_and_counts_app_ids_outside_the_integer_range(db_session):
+    apps = [(0, "Zero"), (-5, "Negative"), (2147483648, "Too Big"), (2147483647, "Max"), (1, "One")]
+    rep = catalog.sync(db_session, key="k", fetch=lambda key: apps)
+    assert rep == {"added": 2, "renamed": 0, "total": 5, "invalid": 3}
+    assert sorted(g.steam_app_id for g in db_session.query(Game)) == [1, 2147483647]
+
+
+def test_a_renamed_game_with_a_long_name_is_not_renamed_again_every_run(db_session):
+    apps = [(1, "y" * 400)]
+    catalog.sync(db_session, key="k", fetch=lambda key: apps)
+    assert catalog.sync(db_session, key="k", fetch=lambda key: apps)["renamed"] == 0
+
+
+def test_a_database_phase_failure_is_logged_and_does_not_raise(db_session, monkeypatch):
+    def boom(name):
+        raise RuntimeError("normalize exploded")
+    monkeypatch.setattr(catalog, "normalize", boom)
+    rep = catalog.sync(db_session, key="k", fetch=lambda key: [(1, "A")])
+    assert rep["skipped"].startswith("error")
+    assert db_session.query(JobRun).filter_by(kind="catalog_sync", outcome="error").count() == 1
+    assert db_session.query(Game).count() == 0
