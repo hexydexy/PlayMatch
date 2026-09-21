@@ -8,6 +8,7 @@ response the first time a key is used (see README, "First run with a key").
 from __future__ import annotations
 
 import logging
+import re
 
 from sqlalchemy import select
 from sqlalchemy.orm import Session
@@ -18,6 +19,44 @@ from .matcher import normalize
 from .models import Game
 
 log = logging.getLogger("playmatch.catalog")
+
+
+class _RedactKeyFilter(logging.Filter):
+    """Redacts API key query parameter from log records."""
+
+    def filter(self, record: logging.LogRecord) -> bool:
+        """Redact key= query parameter and return True to allow the record."""
+        # Redact record.msg if it's a string
+        if isinstance(record.msg, str):
+            record.msg = re.sub(r'key=[^&\s"]+', 'key=REDACTED', record.msg)
+
+        # Redact record.args - convert to string only when checking for key=, preserve types
+        if record.args:
+            if isinstance(record.args, tuple):
+                # Check if any arg contains 'key=' and redact it
+                new_args = []
+                for arg in record.args:
+                    arg_str = str(arg)
+                    if 'key=' in arg_str:
+                        # Only convert to string if it contains the secret
+                        new_args.append(re.sub(r'key=[^&\s"]+', 'key=REDACTED', arg_str))
+                    else:
+                        new_args.append(arg)
+                record.args = tuple(new_args)
+            elif isinstance(record.args, dict):
+                record.args = {
+                    k: re.sub(r'key=[^&\s"]+', 'key=REDACTED', str(v))
+                    if 'key=' in str(v) else v
+                    for k, v in record.args.items()
+                }
+
+        return True
+
+
+# Attach the filter to httpx logger at module import time
+_httpx_logger = logging.getLogger("httpx")
+if not any(isinstance(f, _RedactKeyFilter) for f in _httpx_logger.filters):
+    _httpx_logger.addFilter(_RedactKeyFilter())
 
 URL = "https://api.steampowered.com/IStoreService/GetAppList/v1/"
 PAGE_SIZE = 50000

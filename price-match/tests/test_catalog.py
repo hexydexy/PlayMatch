@@ -112,3 +112,18 @@ def test_fetch_all_raises_on_a_rejected_key(monkeypatch):
     monkeypatch.setattr(catalog, "client", _mock(lambda req: httpx.Response(403, text="Forbidden")))
     with pytest.raises(catalog.ConnectorError):
         catalog.fetch_all("BAD")
+
+
+def test_fetch_all_redacts_api_key_in_logs(monkeypatch, caplog):
+    import logging
+    caplog.set_level(logging.INFO, logger="httpx")
+
+    def handler(req):
+        return httpx.Response(200, json={"response": {
+            "apps": [{"appid": 1, "name": "A"}], "have_more_results": False}})
+
+    monkeypatch.setattr(catalog, "client", _mock(handler))
+    catalog.fetch_all("SECRETKEY123")
+    assert "SECRETKEY123" not in caplog.text
+    assert "key=REDACTED" in caplog.text
+    assert "include_games=true" in caplog.text
