@@ -1,5 +1,5 @@
 from app import gogdb, service
-from app.models import Listing, MatchCandidate
+from app.models import Game, Listing, MatchCandidate, PriceSnapshot
 from tests.test_core import make_archive
 
 
@@ -56,3 +56,47 @@ def test_the_cap_reaches_new_candidates_once_the_top_ones_are_already_queued(db_
     r3 = gogdb.import_archive(db_session, archive, review_cap=1)   # nothing new left
     assert r3["review_queued"] == 0 and r3["review_dropped"] == 0
     assert db_session.query(MatchCandidate).count() == 2
+
+
+def _add_game(s, title, steam_app_id, year=None):
+    g = Game(title=title, norm_title=title.lower(), steam_app_id=steam_app_id, release_year=year)
+    s.add(g)
+    s.commit()
+    return g
+
+
+def test_two_year_less_games_with_the_same_title_are_both_queued_not_linked(db_session, tmp_path):
+    _add_game(db_session, "Hades", 1)
+    _add_game(db_session, "Hades", 2)
+    rep = gogdb.import_archive(db_session, make_archive(tmp_path))
+    assert rep["matched"] == 0 and rep["review_queued"] == 2
+    assert db_session.query(Listing).filter_by(store_id="gog").count() == 0
+
+
+def test_a_year_known_game_links_and_its_year_less_namesake_is_queued(db_session, tmp_path):
+    known = _add_game(db_session, "Hades", 1, 2020)
+    unknown = _add_game(db_session, "Hades", 2)
+    rep = gogdb.import_archive(db_session, make_archive(tmp_path))
+    assert rep["matched"] == 1 and rep["review_queued"] == 1
+    assert db_session.query(Listing).filter_by(game_id=known.id, store_id="gog").count() >= 1
+    assert db_session.query(Listing).filter_by(game_id=unknown.id, store_id="gog").count() == 0
+    assert db_session.query(MatchCandidate).one().game_id == unknown.id
+
+
+def test_a_single_year_less_game_still_links_and_queues_nothing(db_session, tmp_path):
+    _add_game(db_session, "Hades", 1)
+    rep = gogdb.import_archive(db_session, make_archive(tmp_path))
+    assert rep["matched"] == 1 and rep["review_queued"] == 0 and rep["claimed_elsewhere"] == 0
+
+
+def test_a_gog_product_that_belongs_to_another_game_is_not_attached_again(db_session, tmp_path):
+    other = _add_game(db_session, "Something Else", 9)
+    owned = Listing(game_id=other.id, store_id="gog", store_product_id="1207658924", region="US")
+    db_session.add(owned)
+    db_session.commit()
+    before = db_session.query(PriceSnapshot).filter_by(listing_id=owned.id).count()
+    _add_game(db_session, "Hades", 1)
+    rep = gogdb.import_archive(db_session, make_archive(tmp_path))
+    assert rep["matched"] == 0 and rep["claimed_elsewhere"] == 1
+    assert db_session.query(PriceSnapshot).filter_by(listing_id=owned.id).count() == before
+    assert db_session.query(Listing).filter_by(store_id="gog").one().game_id == other.id

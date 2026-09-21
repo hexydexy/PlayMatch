@@ -26,7 +26,7 @@ import json
 import logging
 import re
 import tarfile
-from collections import defaultdict
+from collections import Counter, defaultdict
 from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 
@@ -208,7 +208,7 @@ def import_archive(s: Session, path: Path, region_list=None, review_cap: int | N
     stamp = archive_date(path)
     report = {"archive": path.name, "products": len(products), "products_with_prices": len(prices),
               "files_seen": seen, "matched": 0, "snapshots_added": 0, "review_queued": 0,
-              "review_dropped": 0}
+              "review_dropped": 0, "claimed_elsewhere": 0}
     if not prices:
         log_job(s, "gogdb_import", "gog", ",".join(wanted), "error",
                 f"no prices parsed (saw {seen}); run --inspect")
@@ -220,8 +220,15 @@ def import_archive(s: Session, path: Path, region_list=None, review_cap: int | N
     from .matcher import normalize
     norm = [normalize(pool[p]["title"]) for p in pids]
 
+    def review_listing(p):
+        latest = next(iter(prices[p["id"]].values()))[-1]
+        return RawListing("gog", p["id"], p["title"], p["url"], latest[3], latest[2], latest[1],
+                          region=next(iter(prices[p["id"]])), release_year=p["year"])
+
+    all_games = s.scalars(select(Game)).all()
+    title_counts = Counter(g.norm_title for g in all_games)
     reviews = []  # (score, game, raw): queued after the loop, best first, up to review_cap
-    for game in s.scalars(select(Game)).all():
+    for game in all_games:
         best = None
         for _, score, idx in process.extract(game.norm_title, norm, scorer=fuzz.ratio,
                                              limit=5, score_cutoff=85):
@@ -231,13 +238,19 @@ def import_archive(s: Session, path: Path, region_list=None, review_cap: int | N
             if res.verdict == "match" and (best is None or res.score > best[1]):
                 best = (p, res.score)
             elif res.verdict == "review":
-                latest = next(iter(prices[p["id"]].values()))[-1]
-                reviews.append((res.score, game, RawListing(
-                    "gog", p["id"], p["title"], p["url"], latest[3], latest[2], latest[1],
-                    region=next(iter(prices[p["id"]])), release_year=p["year"])))
+                reviews.append((res.score, game, review_listing(p)))
         if not best:
             continue
         p = best[0]
+        if game.release_year is None and title_counts[game.norm_title] > 1:
+            # a year-less game sharing its title with others cannot tell which one GOG means
+            reviews.append((best[1], game, review_listing(p)))
+            continue
+        if s.scalar(select(Listing.id).where(
+                Listing.store_id == "gog", Listing.store_product_id == p["id"],
+                Listing.region.in_(prices[p["id"]]), Listing.game_id != game.id).limit(1)):
+            report["claimed_elsewhere"] += 1  # this GOG product already belongs to another game
+            continue
         report["matched"] += 1
         for region, recs in prices[p["id"]].items():
             listing = get_or_create_listing(s, game, "gog", p["id"], region, p["url"])
