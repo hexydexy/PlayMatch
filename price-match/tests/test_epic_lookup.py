@@ -10,11 +10,13 @@ NOW = datetime(2026, 9, 21, 12, 0, tzinfo=timezone.utc)
 class FakeEpic:
     store_id = "epic"
 
-    def __init__(self, result=None, exc=None):
-        self.result, self.exc, self.calls = result or [], exc, 0
+    def __init__(self, result=None, exc=None, on_search=None):
+        self.result, self.exc, self.on_search, self.calls = result or [], exc, on_search, 0
 
     def search(self, title, region="US"):
         self.calls += 1
+        if self.on_search:
+            self.on_search()
         if self.exc:
             raise self.exc
         return self.result
@@ -114,3 +116,13 @@ def test_an_error_is_unavailable_not_marked_checked_and_does_not_block(db_sessio
     assert check_count(db_session) == 0
     assert epic_lookup.check_epic(db_session, g, "US", connector=broken, gate=gate, now=NOW)["status"] == "unavailable"
     assert broken.calls == 2  # not blocked: the next visit tries again
+
+
+def test_no_database_transaction_is_open_while_epic_is_searched(db_session):
+    g = hades(db_session)
+    db_session.get(PriceCheck, (g.id, "epic", "US"))  # autobegins a transaction, as the endpoint does
+    seen = []
+    fake = FakeEpic([epic_hades()], on_search=lambda: seen.append(db_session.in_transaction()))
+    out = epic_lookup.check_epic(db_session, g, "US", connector=fake, gate=new_gate(), now=NOW)
+    assert out["status"] == "checked"
+    assert seen == [False]  # the pooled connection is not held through the network call

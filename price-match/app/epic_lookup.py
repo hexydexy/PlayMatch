@@ -64,6 +64,7 @@ def check_epic(s: Session, game: Game, region: str, connector=None, gate: Gate |
         return {"status": "unavailable", "checked_at": _iso(row)}
     if not gate.allow():
         return {"status": "busy", "checked_at": _iso(row)}
+    s.commit()  # end the read transaction: the connection must not be held through the Epic call
     report = service.ingest_game(s, game, region, connectors=[connector or EpicConnector()], blocked=set())
     outcome = report["stores"].get("epic", "")
     if outcome.startswith("rate_limited"):
