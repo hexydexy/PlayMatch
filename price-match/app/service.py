@@ -232,10 +232,12 @@ def current_prices(s: Session, game: Game, currency: str | None = None, region: 
     reg = regions.get(region)
     currency = (currency or reg.currency).upper()
     rows = []
+    latest_at: dict[str, datetime] = {}
     for snap, listing in _latest_snapshots(s, game.id, reg.code):
         price = fx.convert_cents(s, snap.price_cents, snap.currency, currency)
         base = fx.convert_cents(s, snap.base_price_cents, snap.currency, currency)
         store = s.get(Store, listing.store_id)
+        latest_at[store.id] = max(latest_at.get(store.id, snap.captured_at), snap.captured_at)
         rows.append({
             "store_id": store.id, "store": store.name, "store_type": store.type,
             "label": "Official store price",
@@ -246,6 +248,15 @@ def current_prices(s: Session, game: Game, currency: str | None = None, region: 
             "captured_at": snap.captured_at.isoformat(),
             "converted": snap.currency != currency,
         })
+    checks = {c.store_id: c.checked_at for c in s.scalars(select(PriceCheck).where(
+        PriceCheck.game_id == game.id, PriceCheck.region == reg.code))}
+
+    def checked(store_id: str) -> str | None:
+        t = checks.get(store_id) or latest_at.get(store_id)
+        return as_utc(t).isoformat() if t else None
+
+    for r in rows:
+        r["checked_at"] = checked(r["store_id"])
     priced = [r for r in rows if r["price_cents"] is not None]
     lowest = min(priced, key=lambda r: r["price_cents"], default=None)
     for r in rows:
@@ -254,6 +265,7 @@ def current_prices(s: Session, game: Game, currency: str | None = None, region: 
     hist_low = min((p["price_cents"] for st in hist["stores"].values() for p in st["points"]), default=None)
     return {
         "game": game_dict(game), "region": reg.code, "currency": currency,
+        "checks": {sid: checked(sid) for sid in ("steam", "gog", "epic")},
         "prices": sorted(rows, key=lambda r: (r["price_cents"] is None, r["price_cents"] or 0)),
         "lowest_now_cents": lowest["price_cents"] if lowest else None,
         "historical_low_cents": hist_low,
