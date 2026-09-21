@@ -5,7 +5,7 @@ from contextlib import asynccontextmanager
 
 from fastapi import Depends, FastAPI, Header, HTTPException, Query, Request, Response
 from fastapi.middleware.cors import CORSMiddleware
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from . import config, fx, metrics, regions, service
@@ -24,7 +24,7 @@ async def lifespan(app: FastAPI):
 
 app = FastAPI(title="PlayMatch price-match", version="0.2.0", lifespan=lifespan)
 app.add_middleware(CORSMiddleware, allow_origins=config.CORS_ORIGINS,
-                   allow_methods=["*"], allow_headers=["*"])
+                   allow_methods=["*"], allow_headers=["*"], expose_headers=["X-Total-Count"])
 
 
 @app.middleware("http")
@@ -92,10 +92,15 @@ def currencies():
 
 
 @app.get("/api/games")
-def search_games(q: str = Query("", max_length=100), limit: int = 20, s: Session = Depends(get_session)):
-    stmt = select(Game).order_by(Game.title).limit(min(limit, 50))
+def search_games(response: Response, q: str = Query("", max_length=100),
+                 limit: int = Query(20, ge=1, le=100), offset: int = Query(0, ge=0),
+                 s: Session = Depends(get_session)):
+    total = select(func.count(Game.id))
+    stmt = select(Game).order_by(Game.title, Game.id).limit(limit).offset(offset)
     if q:
-        stmt = stmt.where(Game.norm_title.contains(normalize(q)))
+        match = Game.norm_title.contains(normalize(q))
+        total, stmt = total.where(match), stmt.where(match)
+    response.headers["X-Total-Count"] = str(s.scalar(total))
     return [service.game_dict(g) for g in s.scalars(stmt)]
 
 

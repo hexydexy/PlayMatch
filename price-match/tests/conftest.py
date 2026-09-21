@@ -24,3 +24,21 @@ def db_session():
     with sessionmaker(bind=eng, expire_on_commit=False)() as sess:
         service.seed_stores(sess)
         yield sess
+
+
+@pytest.fixture()
+def api(db_session):
+    """A TestClient whose app reads and writes the same database as `db_session`."""
+    from fastapi.testclient import TestClient
+
+    from app import main
+
+    Sess = sessionmaker(bind=db_session.get_bind(), expire_on_commit=False)
+
+    def override():
+        with Sess() as x:
+            yield x
+
+    main.app.dependency_overrides[main.get_session] = override
+    yield TestClient(main.app)
+    main.app.dependency_overrides.clear()
