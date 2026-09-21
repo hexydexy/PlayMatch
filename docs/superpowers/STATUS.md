@@ -1,6 +1,6 @@
 # PlayMatch: where we stopped
 
-Written 2026-09-21, at the point a Claude usage limit interrupted the build. Branch: `steam-catalog` (main is still the baseline commit `5ee363b`).
+Written 2026-09-21, at the point a Claude usage limit interrupted the build. Branch: `steam-catalog` (`main` is still the original baseline commit, before any of this work).
 
 ## What PlayMatch is now
 
