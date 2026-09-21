@@ -53,3 +53,23 @@ def test_prices_for_treats_a_server_error_as_an_error(monkeypatch):
     monkeypatch.setattr(steam, "client", _mock(lambda req: httpx.Response(500)))
     with pytest.raises(ConnectorError):
         steam.SteamConnector().prices_for([1], "US")
+
+
+def test_prices_for_treats_non_json_200_body_as_error(monkeypatch):
+    monkeypatch.setattr(steam, "client", _mock(lambda req: httpx.Response(200, content=b"<html>")))
+    with pytest.raises(ConnectorError):
+        steam.SteamConnector().prices_for([1], "US")
+
+
+def test_parse_price_batch_tolerates_malformed_entries():
+    payload = {
+        "1": PRICED,
+        "2": {"success": True, "data": {"price_overview": {"currency": "USD", "initial": 5999}}},  # missing final
+        "3": {"success": True, "data": {"price_overview": {"currency": "USD", "initial": 5999, "final": None}}},  # null final
+        "4": {"success": True, "data": []},  # data is a list
+        "5": {"success": True, "data": "invalid"},  # data is a string
+    }
+    out = steam.parse_price_batch(payload, [1, 2, 3, 4, 5])
+    assert set(out) == {1, 2, 3, 4, 5}
+    assert out[1] is not None and out[1].price_cents == 2999  # id 1 valid
+    assert out[2] is None and out[3] is None and out[4] is None and out[5] is None  # ids 2-5 malformed

@@ -64,13 +64,16 @@ def parse_price_batch(payload: dict, app_ids: list[int], region: str = "US") -> 
     free, unreleased, delisted or omitted ids map to None."""
     out: dict[int, RawListing | None] = {}
     for app_id in app_ids:
-        entry = payload.get(str(app_id)) or {}
-        po = (entry.get("data") or {}).get("price_overview") if entry.get("success") else None
-        out[app_id] = None if not po else RawListing(
-            store_id="steam", product_id=str(app_id), title="",
-            url=f"https://store.steampowered.com/app/{app_id}",
-            price_cents=int(po["final"]), base_price_cents=int(po["initial"]),
-            currency=po["currency"], steam_app_id=app_id, region=region)
+        try:
+            entry = payload.get(str(app_id)) or {}
+            po = (entry.get("data") or {}).get("price_overview") if entry.get("success") else None
+            out[app_id] = None if not po else RawListing(
+                store_id="steam", product_id=str(app_id), title="",
+                url=f"https://store.steampowered.com/app/{app_id}",
+                price_cents=int(po["final"]), base_price_cents=int(po["initial"]),
+                currency=po["currency"], steam_app_id=app_id, region=region)
+        except (KeyError, TypeError, ValueError, AttributeError):
+            out[app_id] = None
     return out
 
 
@@ -109,7 +112,10 @@ class SteamConnector:
                                        "cc": regions.get(region).code, "filters": "price_overview"})
             polite_sleep()
             check_status(r, "steam", LIMITED)
-            payload = r.json()
+            try:
+                payload = r.json()
+            except ValueError:
+                raise ConnectorError("steam batch: response is not JSON")
         if not isinstance(payload, dict):
             raise ConnectorError("steam batch: unexpected response body")
         return payload
