@@ -8,7 +8,7 @@ from __future__ import annotations
 import re
 
 from .. import regions
-from .base import RawListing, check_status, client, polite_sleep
+from .base import ConnectorError, RawListing, check_status, client, polite_sleep
 
 SEARCH = "https://store.steampowered.com/api/storesearch/"
 DETAILS = "https://store.steampowered.com/api/appdetails"
@@ -59,6 +59,21 @@ def parse_details(app_id: int, payload: dict, region: str = "US") -> RawListing 
     )
 
 
+def parse_price_batch(payload: dict, app_ids: list[int], region: str = "US") -> dict[int, RawListing | None]:
+    """Prices from a multi-id `price_overview` response. Every requested id is a key;
+    free, unreleased, delisted or omitted ids map to None."""
+    out: dict[int, RawListing | None] = {}
+    for app_id in app_ids:
+        entry = payload.get(str(app_id)) or {}
+        po = (entry.get("data") or {}).get("price_overview") if entry.get("success") else None
+        out[app_id] = None if not po else RawListing(
+            store_id="steam", product_id=str(app_id), title="",
+            url=f"https://store.steampowered.com/app/{app_id}",
+            price_cents=int(po["final"]), base_price_cents=int(po["initial"]),
+            currency=po["currency"], steam_app_id=app_id, region=region)
+    return out
+
+
 # Steam signals throttling with 429 and, for appdetails, sometimes 403.
 LIMITED = (429, 403)
 
@@ -86,3 +101,18 @@ class SteamConnector:
             polite_sleep()
             check_status(r, "steam", LIMITED)
             return parse_details(app_id, r.json(), region)
+
+    def fetch_batch_payload(self, app_ids: list[int], region: str = "US") -> dict:
+        """One request for many ids; returns Steam's raw JSON object."""
+        with client() as c:
+            r = c.get(DETAILS, params={"appids": ",".join(str(a) for a in app_ids),
+                                       "cc": regions.get(region).code, "filters": "price_overview"})
+            polite_sleep()
+            check_status(r, "steam", LIMITED)
+            payload = r.json()
+        if not isinstance(payload, dict):
+            raise ConnectorError("steam batch: unexpected response body")
+        return payload
+
+    def prices_for(self, app_ids: list[int], region: str = "US") -> dict[int, RawListing | None]:
+        return parse_price_batch(self.fetch_batch_payload(app_ids, region), app_ids, region)
