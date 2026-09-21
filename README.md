@@ -38,13 +38,13 @@ The dump's internal layout could not be checked when this was written. The impor
     docker compose run --rm --entrypoint python snapshot -m app.gogdb --inspect /cache/gogdb_YYYY-MM-DD.tar.xz
 
 and adjust `app/gogdb.py` (`extract_prices`). Also check that prices come out right (cents vs dollars).
-GOG history is change-point data (one record per price change) while Steam/Epic are daily samples, so per-store averages are not directly comparable.
+Bulk Steam prices are stored when they change plus a weekly heartbeat, Epic seed games are stored daily, and GOG rows come at its price changes, so per-store sample counts and averages are not directly comparable.
 
 ## Full Steam catalog
 The daily job (`python -m app.snapshot`) runs, in order: catalog sync (lists every Steam base game), FX refresh, bulk Steam prices, Epic prices for the seed games only, and the GOGDB import.
 
 - **Catalog:** needs a free Steam Web API key (https://steamcommunity.com/dev/apikey) in `.env` as `STEAM_API_KEY`. Without it the step is skipped and the existing games keep working. Two Steam apps with the same title stay two games. The key is redacted from the HTTP request log lines (`key=REDACTED`), so it does not leak into job or Docker logs.
-- **Steam prices:** `STEAM_BATCH_SIZE` games per request (default 50). A batch that fails is split in half and retried. A single game that keeps failing is skipped and retried next run. After 10 failed Steam requests in a row (a real outage) the run stops early, logs one error, and leaves the remaining games unchecked so they go first next run. A game is marked checked (table `price_checks`) even when Steam returns no price (free to play, unreleased, delisted). Never-checked games are fetched first, so a run cut short resumes where it stopped.
+- **Steam prices:** `STEAM_BATCH_SIZE` games per request (default 50). A batch that fails is split in half and retried. A single game that keeps failing is skipped and retried next run. After 10 failed Steam requests in a row (a real outage) the run stops early, logs one error, and leaves the remaining games unchecked so they go first next run. A game is marked checked (table `price_checks`) even when Steam returns no price (free to play, unreleased, delisted). Never-checked games are fetched first, so a run cut short resumes where it stopped. Steam throttles the price endpoint, and when it does the run stops and resumes where it stopped on the next run, so the first full pass over a very large catalog may take several daily runs; on the first real-key run, note how many batches succeeded before any rate limit (the run report shows `batches` and `rate_limited`).
 - **Snapshots:** bulk Steam snapshots are stored only when a price changes, plus one every `SNAPSHOT_HEARTBEAT_DAYS` (default 7); the chart already treats a price as holding until the next sample. Epic prices for the seed games are stored on every daily run, and GOG rows come from GOGDB's own price-change records.
 - **GOG for catalog games:** catalog games have no release year, so only exact title matches (after normalizing) link automatically. Near-matches go to the manual review queue, at most `REVIEW_QUEUE_CAP_PER_RUN` (default 200) per run, highest score first. Only candidates not already in the review queue count toward the cap, so old entries never use it up.
 - **Epic:** only seed games (`app/seed_games.json`) are refreshed daily. Other games get Epic prices only when an admin refreshes them (`POST /api/admin/games/{id}/refresh`).
@@ -93,4 +93,5 @@ To repeat the benchmark, run from `price-match/`:
 - History conversion uses the latest FX rate, not the rate at capture time.
 - Steam/Epic connectors depend on unofficial endpoints and can break without notice.
 - Non-seed games get no Epic prices from the daily job, so they have no Epic history unless an admin refreshes them.
+- GOG links for catalog games are title-only: a game whose exact normalized title is shared with other Steam games is queued for review instead of linking automatically, and a GOG product that already belongs to one game is never attached to another.
 - A game delisted from Steam keeps its last stored price. The time it was last checked is stored (`price_checks`) but not shown in the UI yet.

@@ -31,7 +31,7 @@ services:
     depends_on: {db: {condition: service_healthy}}
     ports: ["8000:8000"]
 
-  # Runs the daily data job (FX, Steam/Epic snapshots, GOGDB import).
+  # Runs the daily data job (catalog sync, FX, bulk Steam prices, seed-game Epic prices, GOGDB import).
   scheduler:
     build: ./price-match
     restart: unless-stopped
