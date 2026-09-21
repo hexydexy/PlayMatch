@@ -40,3 +40,14 @@ def test_checks_are_per_region(db_session):
     g = service.upsert_game(db_session, "Hades", 1145360, 2020)
     service.mark_checked(db_session, [g.id], "epic", "GB", T)
     assert service.current_prices(db_session, g, "USD", "US")["checks"]["epic"] is None
+
+
+def test_a_snapshot_newer_than_the_price_check_wins(db_session):
+    g = service.upsert_game(db_session, "Hades", 1145360, 2020)
+    service.mark_checked(db_session, [g.id], "steam", "US", T)
+    later = T + timedelta(days=20)
+    service.record_snapshot_if_due(db_session, g, steam(), later)
+    db_session.commit()
+    p = service.current_prices(db_session, g, "USD", "US")
+    assert p["prices"][0]["checked_at"] == later.isoformat()
+    assert p["checks"]["steam"] == later.isoformat()

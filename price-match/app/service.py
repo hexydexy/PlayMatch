@@ -252,8 +252,8 @@ def current_prices(s: Session, game: Game, currency: str | None = None, region: 
         PriceCheck.game_id == game.id, PriceCheck.region == reg.code))}
 
     def checked(store_id: str) -> str | None:
-        t = checks.get(store_id) or latest_at.get(store_id)
-        return as_utc(t).isoformat() if t else None
+        ts = [as_utc(t) for t in (checks.get(store_id), latest_at.get(store_id)) if t]
+        return max(ts).isoformat() if ts else None
 
     for r in rows:
         r["checked_at"] = checked(r["store_id"])
