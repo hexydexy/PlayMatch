@@ -3,7 +3,7 @@
 Price match and price history for PC games across Steam, GOG and Epic Games. US region first; other regions are a config change.
 
 ## Layout
-- `price-match/` FastAPI service: connectors, matcher, FX, GOGDB importer, daily job, price + history + stats API, `/metrics`
+- `price-match/` FastAPI service: connectors, matcher, FX, catalog sync, bulk Steam prices, GOGDB importer, daily job, price + history + stats API, `/metrics`
 - `frontend/` static UI served by nginx: `index.html` (page shell + sticky nav), `app.css`, `app.js`, `fonts/`. No build step; see "Frontend" below
 - `docker-compose.yml` db (Postgres), price-match, scheduler (daily job), frontend, and a one-shot `snapshot` job
 
@@ -25,7 +25,7 @@ Hash-routed single page: `#/` is the games list (search + cover-art grid) and `#
 ## Data sources
 | Store | How | Notes |
 | --- | --- | --- |
-| Steam | Public storefront endpoints, live | Unofficial. 1 request/second by default |
+| Steam | Catalog: `IStoreService/GetAppList` (needs `STEAM_API_KEY`). Prices: batched `appdetails` calls, several games per request | Unofficial price endpoint. `REQUEST_DELAY` spacing applies per request |
 | Epic | Storefront GraphQL, live | Unofficial. Same politeness settings |
 | GOG | GOGDB daily dump (gogdb.org/backups_v3), one ~60 MB download per day | Also backfills real price history. No requests to GOG itself |
 | G2A | Dropped: no open API and scraping would breach terms | |
@@ -39,6 +39,39 @@ The dump's internal layout could not be checked when this was written. The impor
 
 and adjust `app/gogdb.py` (`extract_prices`). Also check that prices come out right (cents vs dollars).
 GOG history is change-point data (one record per price change) while Steam/Epic are daily samples, so per-store averages are not directly comparable.
+
+## Full Steam catalog
+The daily job (`python -m app.snapshot`) runs, in order: catalog sync (lists every Steam base game), FX refresh, bulk Steam prices, Epic prices for the seed games only, and the GOGDB import.
+
+- **Catalog:** needs a free Steam Web API key (https://steamcommunity.com/dev/apikey) in `.env` as `STEAM_API_KEY`. Without it the step is skipped and the existing games keep working. Two Steam apps with the same title stay two games. The key is redacted from the HTTP request log lines (`key=REDACTED`), so it does not leak into job or Docker logs.
+- **Steam prices:** `STEAM_BATCH_SIZE` games per request (default 50). A batch that fails is split in half and retried. A single game that keeps failing is skipped and retried next run. After 10 failed Steam requests in a row (a real outage) the run stops early, logs one error, and leaves the remaining games unchecked so they go first next run. A game is marked checked (table `price_checks`) even when Steam returns no price (free to play, unreleased, delisted). Never-checked games are fetched first, so a run cut short resumes where it stopped.
+- **Snapshots** are stored only when a price changes, plus one every `SNAPSHOT_HEARTBEAT_DAYS` (default 7). The chart already treats a price as holding until the next sample.
+- **GOG for catalog games:** catalog games have no release year, so only exact title matches (after normalizing) link automatically. Near-matches go to the manual review queue, at most `REVIEW_QUEUE_CAP_PER_RUN` (default 200) per run, highest score first. Only candidates not already in the review queue count toward the cap, so old entries never use it up.
+- **Epic:** only seed games (`app/seed_games.json`) are refreshed daily. Other games get Epic prices only when an admin refreshes them (`POST /api/admin/games/{id}/refresh`).
+
+### First run with a key
+    docker compose up -d --build
+    docker compose run --rm snapshot --seed --skip-gogdb     # lists every game, prices them all
+    docker compose run --rm --entrypoint python snapshot -m app.bulk --probe
+
+The first command prints the catalog sync result (`{'added': N, ...}`, which is your game count) and the bulk report. If `catalog.sync` printed `{'skipped': 'error: ...'}` the API key was rejected or Steam's response shape differs from the parser: check the log line. The probe prints the largest batch size Steam fully answers; set `STEAM_BATCH_SIZE` to it in `.env`.
+
+### Scale results
+Measured on a 100,000-game Postgres 16 database (see `price-match/scripts/scale_test.py`). The games are synthetic: random 2-4 word titles from a 40-word list, and the GOG pool is 12,000 synthetic titles. The matching figure is measured on a sample of 3,000 games and extrapolated linearly to 100,000. Real titles are longer, so it is probably a lower bound, and it covers only the fuzzy-matching call, not `evaluate()` or database work.
+
+| Check | Result |
+| --- | --- |
+| Substring search on Postgres, 4 queries, 3 runs (limit 48, ordered) | 'dragon' 72.0 / 69.2 / 78.2 ms; 'dark soul' 10.3 / 11.3 / 13.7 ms; 'zzzz' 9.5 / 10.8 / 12.1 ms; 'a' 1.7 / 1.6 / 1.8 ms. All under the 200 ms limit |
+| GOG fuzzy matching, projected for 100,000 games | Extract loop: 0.89 ms/game, 89 s projected (limit 600 s). Chunked cdist (numpy, all cores): 0.03 ms/game, 3 s projected, not adopted |
+| Index / matching change applied | None. Neither decision rule fired: no `pg_trgm` index, no chunked `cdist` |
+
+To repeat the benchmark, run from `price-match/`:
+
+    DATABASE_URL=postgresql+psycopg://pm:pm@localhost:5433/pm python -m scripts.scale_test populate --games 100000
+    DATABASE_URL=postgresql+psycopg://pm:pm@localhost:5433/pm python -m scripts.scale_test search
+    python -m scripts.scale_test match --games 100000 --pool 12000 --sample 3000
+
+`populate` refuses to run unless `DATABASE_URL` is set. It writes 100,000 synthetic games to that database, so point it at a throwaway one. `match` does not use a database.
 
 ## Regions
 `REGIONS=US` by default. `REGIONS=US,GB,DE` enables more (see `app/regions.py`): connectors query that storefront, listings and snapshots are stored per region, the API takes `?region=`, and the UI shows a region selector once more than one is enabled. Costs scale linearly: each extra region multiplies live Steam/Epic requests.
@@ -59,3 +92,5 @@ GOG history is change-point data (one record per price change) while Steam/Epic 
 ## Known limits
 - History conversion uses the latest FX rate, not the rate at capture time.
 - Steam/Epic connectors depend on unofficial endpoints and can break without notice.
+- Non-seed games get no Epic prices from the daily job, so they have no Epic history unless an admin refreshes them.
+- A game delisted from Steam keeps its last stored price. The time it was last checked is stored (`price_checks`) but not shown in the UI yet.
