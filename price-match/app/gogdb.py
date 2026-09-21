@@ -201,13 +201,14 @@ def _naive(d: datetime) -> datetime:
     return d.astimezone(timezone.utc).replace(tzinfo=None)
 
 
-def import_archive(s: Session, path: Path, region_list=None) -> dict:
+def import_archive(s: Session, path: Path, region_list=None, review_cap: int | None = None) -> dict:
     region_list = region_list or regions.enabled()
     wanted = {r.code: r.currency for r in region_list}
     products, prices, seen = scan_archive(path, wanted)
     stamp = archive_date(path)
     report = {"archive": path.name, "products": len(products), "products_with_prices": len(prices),
-              "files_seen": seen, "matched": 0, "snapshots_added": 0, "review_queued": 0}
+              "files_seen": seen, "matched": 0, "snapshots_added": 0, "review_queued": 0,
+              "review_dropped": 0}
     if not prices:
         log_job(s, "gogdb_import", "gog", ",".join(wanted), "error",
                 f"no prices parsed (saw {seen}); run --inspect")
@@ -219,6 +220,7 @@ def import_archive(s: Session, path: Path, region_list=None) -> dict:
     from .matcher import normalize
     norm = [normalize(pool[p]["title"]) for p in pids]
 
+    reviews = []  # (score, game, raw): queued after the loop, best first, up to review_cap
     for game in s.scalars(select(Game)).all():
         best = None
         for _, score, idx in process.extract(game.norm_title, norm, scorer=fuzz.ratio,
@@ -230,10 +232,9 @@ def import_archive(s: Session, path: Path, region_list=None) -> dict:
                 best = (p, res.score)
             elif res.verdict == "review":
                 latest = next(iter(prices[p["id"]].values()))[-1]
-                queue_review(s, game, RawListing("gog", p["id"], p["title"], p["url"], latest[3], latest[2],
-                                                 latest[1], region=next(iter(prices[p["id"]])),
-                                                 release_year=p["year"]), res.score)
-                report["review_queued"] += 1
+                reviews.append((res.score, game, RawListing(
+                    "gog", p["id"], p["title"], p["url"], latest[3], latest[2], latest[1],
+                    region=next(iter(prices[p["id"]])), release_year=p["year"])))
         if not best:
             continue
         p = best[0]
@@ -257,6 +258,12 @@ def import_archive(s: Session, path: Path, region_list=None) -> dict:
             s.add_all(new)
             report["snapshots_added"] += len(new)
         s.commit()
+    reviews.sort(key=lambda r: -r[0])
+    keep = reviews if review_cap is None else reviews[:max(0, review_cap)]
+    for score, game, raw in keep:
+        queue_review(s, game, raw, score)
+    report["review_queued"] = len(keep)
+    report["review_dropped"] = len(reviews) - len(keep)
     log_job(s, "gogdb_import", "gog", ",".join(wanted), "ok" if report["matched"] else "no_match",
             f"{report['matched']} games, {report['snapshots_added']} snapshots")
     return report
