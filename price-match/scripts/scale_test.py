@@ -1,14 +1,19 @@
 """Scale checks for the full-catalog design. Run from price-match/.
 
+WARNING: `populate` inserts the requested number of synthetic games (default 100,000) into the
+database named by DATABASE_URL. Only point it at a throwaway database. It refuses to run when
+DATABASE_URL is unset, so it cannot fall back to the app's default development database.
+
     DATABASE_URL=sqlite:///scale.db python -m scripts.scale_test populate --games 100000
     DATABASE_URL=... python -m scripts.scale_test search
     python -m scripts.scale_test match --games 100000 --pool 12000 --sample 3000
 
-`search` times the exact query the API runs. `match` times the GOG fuzzy-matching call on a
+`search` times a query with the same predicate and ordering shape as the API's search. `match` times the GOG fuzzy-matching call on a
 sample of games and projects the time for the full catalog, and (if numpy is installed) also
 times a chunked `cdist` alternative.
 """
 import argparse
+import os
 import random
 import time
 
@@ -21,7 +26,17 @@ def fake_title(rng):
     return " ".join(rng.choice(WORDS) for _ in range(rng.randint(2, 4)))
 
 
+def describe_target(url):
+    from sqlalchemy.engine import make_url
+    return make_url(url).render_as_string(hide_password=True)
+
+
 def populate(n):
+    if "DATABASE_URL" not in os.environ:
+        raise SystemExit("Refusing to write synthetic games to the default database. Set DATABASE_URL to a "
+                         "throwaway database first, e.g. sqlite:///scale.db or "
+                         "postgresql+psycopg://pm:pm@localhost:5433/pm")
+    print(f"populating {n} synthetic games into {describe_target(os.environ['DATABASE_URL'])}")
     from app.db import SessionLocal, init_db
     from app.matcher import normalize
     from app.models import Game
