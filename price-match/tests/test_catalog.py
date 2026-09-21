@@ -158,3 +158,31 @@ def test_a_database_phase_failure_is_logged_and_does_not_raise(db_session, monke
     assert rep["skipped"].startswith("error")
     assert db_session.query(JobRun).filter_by(kind="catalog_sync", outcome="error").count() == 1
     assert db_session.query(Game).count() == 0
+
+
+def test_fetch_all_stops_when_the_cursor_does_not_advance(monkeypatch):
+    calls = []
+
+    def handler(req):
+        calls.append(1)
+        return httpx.Response(200, json={"response": {
+            "apps": [{"appid": 5, "name": "A"}], "have_more_results": True, "last_appid": 5}})
+
+    monkeypatch.setattr(catalog, "client", _mock(handler))
+    catalog.fetch_all("KEY")
+    assert len(calls) == 2  # the second page repeats cursor 5, so we stop instead of looping forever
+
+
+def test_fetch_all_is_cut_off_after_max_pages(monkeypatch):
+    calls = []
+
+    def handler(req):
+        calls.append(1)
+        n = len(calls)
+        return httpx.Response(200, json={"response": {
+            "apps": [{"appid": n, "name": f"G{n}"}], "have_more_results": True, "last_appid": n}})
+
+    monkeypatch.setattr(catalog, "MAX_PAGES", 3, raising=False)
+    monkeypatch.setattr(catalog, "client", _mock(handler))
+    assert len(catalog.fetch_all("KEY")) == 3
+    assert len(calls) == 3

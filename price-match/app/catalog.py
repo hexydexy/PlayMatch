@@ -60,6 +60,7 @@ if not any(isinstance(f, _RedactKeyFilter) for f in _httpx_logger.filters):
 
 URL = "https://api.steampowered.com/IStoreService/GetAppList/v1/"
 PAGE_SIZE = 50000
+MAX_PAGES = 100  # safety stop for the cursor loop; 100 pages of 50,000 is far more than Steam lists
 COMMIT_EVERY = 5000
 MAX_APP_ID = 2**31 - 1  # steam_app_id is an Integer column
 MAX_NAME_LEN = 300  # games.title is String(300)
@@ -77,7 +78,7 @@ def fetch_all(key: str) -> list[tuple[int, str]]:
     apps: list[tuple[int, str]] = []
     last = 0
     with client() as c:
-        while True:
+        for _ in range(MAX_PAGES):
             r = c.get(URL, params={
                 "key": key, "include_games": "true", "include_dlc": "false",
                 "include_software": "false", "include_videos": "false",
@@ -88,7 +89,12 @@ def fetch_all(key: str) -> list[tuple[int, str]]:
             apps.extend(page)
             if not more or not last_id:  # also stops if Steam ever omits the cursor
                 break
+            if last_id <= last:  # a cursor that does not advance would repeat the same page forever
+                log.warning("catalog fetch stopped: cursor %s did not advance past %s", last_id, last)
+                break
             last = last_id
+        else:
+            log.warning("catalog fetch stopped after %d pages (MAX_PAGES)", MAX_PAGES)
     return apps
 
 
