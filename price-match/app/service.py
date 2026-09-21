@@ -2,17 +2,17 @@
 from __future__ import annotations
 
 import logging
-from datetime import timedelta
+from datetime import datetime, timedelta, timezone
 
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
-from . import fx, regions
+from . import config, fx, regions
 from .connectors.base import ConnectorError, RateLimited, RawListing, polite_sleep
 from .connectors.epic import EpicConnector
 from .connectors.steam import SteamConnector
 from .matcher import evaluate, normalize
-from .models import (Game, JobRun, Listing, MatchCandidate, PriceSnapshot,
+from .models import (Game, JobRun, Listing, MatchCandidate, PriceCheck, PriceSnapshot,
                      Store, utcnow)
 
 log = logging.getLogger("playmatch")
@@ -36,6 +36,28 @@ def seed_stores(s: Session):
 def log_job(s: Session, kind: str, store_id: str, region: str, outcome: str, detail: str | None = None):
     s.add(JobRun(kind=kind, store_id=store_id, region=region, outcome=outcome,
                  detail=(detail or "")[:300] or None))
+    s.commit()
+
+
+def as_utc(dt: datetime) -> datetime:
+    """SQLite hands back naive datetimes and Postgres aware ones; treat naive as UTC."""
+    return dt if dt.tzinfo else dt.replace(tzinfo=timezone.utc)
+
+
+def mark_checked(s: Session, game_ids: list[int], store_id: str, region: str,
+                 now: datetime | None = None) -> None:
+    """Record that `store_id` was asked about these games just now (insert or update)."""
+    if not game_ids:
+        return
+    now = now or utcnow()
+    have = {c.game_id: c for c in s.scalars(select(PriceCheck).where(
+        PriceCheck.game_id.in_(game_ids), PriceCheck.store_id == store_id,
+        PriceCheck.region == region))}
+    for gid in game_ids:
+        if gid in have:
+            have[gid].checked_at = now
+        else:
+            s.add(PriceCheck(game_id=gid, store_id=store_id, region=region, checked_at=now))
     s.commit()
 
 
