@@ -8,7 +8,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
-from . import config, fx, metrics, regions, service
+from . import config, epic_lookup, fx, metrics, regions, service
 from .db import SessionLocal, get_session, init_db
 from .matcher import normalize
 from .models import Game, MatchCandidate
@@ -114,6 +114,12 @@ def prices(game_id: int, currency: str | None = None, region: str | None = None,
 def history(game_id: int, currency: str | None = None, region: str | None = None,
             days: int = Query(365, ge=1, le=3650), s: Session = Depends(get_session)):
     return service.history(s, _game(s, game_id), currency, days, _region(region))
+
+
+@app.post("/api/games/{game_id}/epic-check")
+def epic_check(game_id: int, region: str | None = None, s: Session = Depends(get_session)):
+    """Look up the Epic price for this game if it has not been checked recently."""
+    return epic_lookup.check_epic(s, _game(s, game_id), _region(region))
 
 
 # ---- admin: requires X-Admin-Token matching ADMIN_TOKEN ------------------
