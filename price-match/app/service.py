@@ -102,6 +102,36 @@ def record_snapshot(s: Session, game: Game, raw: RawListing) -> PriceSnapshot:
     return snap
 
 
+def latest_snapshot(s: Session, listing_id: int) -> PriceSnapshot | None:
+    return s.scalar(select(PriceSnapshot).where(PriceSnapshot.listing_id == listing_id)
+                    .order_by(PriceSnapshot.captured_at.desc(), PriceSnapshot.id.desc()).limit(1))
+
+
+def record_snapshot_if_due(s: Session, game: Game, raw: RawListing,
+                           now: datetime | None = None) -> PriceSnapshot | None:
+    """Like `record_snapshot`, but skips a price that has not changed.
+
+    A snapshot is stored when the price, base price or currency differs from the
+    latest one, or when the latest one is at least SNAPSHOT_HEARTBEAT_DAYS old (so the
+    history keeps regular sample dates). Flushes; the caller commits.
+    """
+    now = now or utcnow()
+    listing = get_or_create_listing(s, game, raw.store_id, raw.product_id, raw.region, raw.url)
+    last = latest_snapshot(s, listing.id)
+    if last is not None:
+        same = (last.price_cents, last.base_price_cents, last.currency) == \
+               (raw.price_cents, raw.base_price_cents, raw.currency)
+        if same and now - as_utc(last.captured_at) < timedelta(days=config.SNAPSHOT_HEARTBEAT_DAYS):
+            s.flush()
+            return None
+    snap = PriceSnapshot(listing_id=listing.id, price_cents=raw.price_cents,
+                         base_price_cents=raw.base_price_cents, currency=raw.currency,
+                         discount_pct=raw.discount_pct, captured_at=now)
+    s.add(snap)
+    s.flush()
+    return snap
+
+
 def ingest_game(s: Session, game: Game, region: str | None = None, connectors=None,
                 blocked: set[str] | None = None) -> dict:
     """Fetch each live store for one game/region, match, and append snapshots.
