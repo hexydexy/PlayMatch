@@ -22,6 +22,8 @@ from .models import Game, PriceCheck, utcnow
 
 log = logging.getLogger("playmatch.bulk")
 
+MAX_CONSECUTIVE_FAILURES = 10
+
 
 def games_due(s: Session, region: str) -> list[tuple[int, int, str]]:
     """(game id, steam app id, title): never-checked first, then oldest check."""
@@ -39,13 +41,14 @@ def refresh_steam_prices(s: Session, region: str = "US", connector=None,
     size = max(1, batch_size or config.STEAM_BATCH_SIZE)
     blocked = blocked if blocked is not None else set()
     rep = {"games": 0, "batches": 0, "priced": 0, "no_price": 0, "snapshots": 0,
-           "errors": 0, "rate_limited": False}
+           "errors": 0, "rate_limited": False, "aborted": False}
     if "steam" in blocked:
         rep["rate_limited"] = True
         return rep
     due = games_due(s, region)
     rep["games"] = len(due)
     pending = deque(due[i:i + size] for i in range(0, len(due), size))
+    consecutive_failures = 0
     while pending:
         batch = pending.popleft()
         ids = [app_id for _, app_id, _ in batch]
@@ -58,6 +61,13 @@ def refresh_steam_prices(s: Session, region: str = "US", connector=None,
             service.log_job(s, "ingest", "steam", region, "rate_limited", str(e))
             break
         except Exception as e:
+            consecutive_failures += 1
+            if consecutive_failures >= MAX_CONSECUTIVE_FAILURES:
+                rep["aborted"] = True
+                log.error("aborting run: %d consecutive Steam failures", MAX_CONSECUTIVE_FAILURES)
+                service.log_job(s, "ingest", "steam", region, "error",
+                               f"aborting run: {MAX_CONSECUTIVE_FAILURES} consecutive Steam failures")
+                break
             if len(batch) > 1:  # an oversized or bad batch: retry as two halves
                 mid = len(batch) // 2
                 pending.appendleft(batch[mid:])
@@ -67,6 +77,7 @@ def refresh_steam_prices(s: Session, region: str = "US", connector=None,
             log.warning("steam batch of 1 failed (app %s): %s", ids[0], e)
             service.log_job(s, "ingest", "steam", region, "error", str(e))
             continue
+        consecutive_failures = 0
         _record_batch(s, batch, result, region, rep)
     return rep
 

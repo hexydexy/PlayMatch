@@ -149,3 +149,45 @@ def test_probe_ignores_sizes_larger_than_the_sample():
     fake = ProbeSteam(limit=1000)
     assert bulk.probe_batch_size(fake, list(range(1, 76))) == 50
     assert fake.sizes == [50]
+
+
+def test_outage_aborts_after_max_consecutive_failures(db_session):
+    add_games(db_session, 30)
+    fake = FakeSteam({})  # no prices, connector will fail
+
+    def always_fail(ids, n):
+        raise ConnectorError("network timeout")
+
+    fake.fail = always_fail
+    rep = bulk.refresh_steam_prices(db_session, "US", connector=fake, batch_size=5)
+
+    # Exactly 10 calls: the batch-halving descent eventually hits the ceiling
+    assert len(fake.calls) == 10
+    assert rep["aborted"] is True
+    assert db_session.query(PriceCheck).count() == 0
+    # Exactly one JobRun with detail starting with "aborting run"
+    aborting_jobs = db_session.query(JobRun).filter(
+        JobRun.store_id == "steam",
+        JobRun.outcome == "error",
+        JobRun.detail.like("aborting run%")
+    ).all()
+    assert len(aborting_jobs) == 1
+
+
+def test_poison_id_is_still_isolated_after_abort_logic(db_session):
+    add_games(db_session, 50)
+
+    def fail_on_poison(ids, n):
+        if 1023 in ids:
+            raise ConnectorError("poison id")
+        return None  # signal prices available by returning None (caller gets them)
+
+    fake = FakeSteam({a: priced(a) for a in range(1000, 1050)})
+    fake.fail = fail_on_poison
+    rep = bulk.refresh_steam_prices(db_session, "US", connector=fake, batch_size=50)
+
+    assert rep["aborted"] is False
+    assert rep["errors"] == 1
+    assert rep["priced"] == 49
+    checked = {c.game_id for c in db_session.query(PriceCheck)}
+    assert len(checked) == 49  # all except the poison id game
