@@ -42,3 +42,17 @@ def test_no_cap_queues_everything_as_before(db_session, tmp_path):
     service.upsert_game(db_session, "Hadess", 222)
     rep = gogdb.import_archive(db_session, make_archive(tmp_path))
     assert rep["review_queued"] == 2 and rep["review_dropped"] == 0
+
+
+def test_the_cap_reaches_new_candidates_once_the_top_ones_are_already_queued(db_session, tmp_path):
+    service.upsert_game(db_session, "Hades", 111, 2005)   # scores 90 (exact title, year mismatch)
+    service.upsert_game(db_session, "Hadess", 222)        # scores about 90.9 (fuzzy, no year)
+    archive = make_archive(tmp_path)
+    r1 = gogdb.import_archive(db_session, archive, review_cap=1)   # queues Hadess
+    r2 = gogdb.import_archive(db_session, archive, review_cap=1)   # must reach Hades, not re-pick Hadess
+    assert r1["review_queued"] == 1 and r1["review_dropped"] == 1
+    assert r2["review_queued"] == 1 and r2["review_dropped"] == 0
+    assert db_session.query(MatchCandidate).count() == 2
+    r3 = gogdb.import_archive(db_session, archive, review_cap=1)   # nothing new left
+    assert r3["review_queued"] == 0 and r3["review_dropped"] == 0
+    assert db_session.query(MatchCandidate).count() == 2

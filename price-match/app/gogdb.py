@@ -37,7 +37,7 @@ from sqlalchemy.orm import Session
 from . import config, regions
 from .connectors.base import RawListing, client
 from .matcher import evaluate
-from .models import Game, Listing, PriceSnapshot
+from .models import Game, Listing, MatchCandidate, PriceSnapshot
 from .service import (get_or_create_listing, log_job, queue_review)
 
 log = logging.getLogger("playmatch.gogdb")
@@ -258,6 +258,10 @@ def import_archive(s: Session, path: Path, region_list=None, review_cap: int | N
             s.add_all(new)
             report["snapshots_added"] += len(new)
         s.commit()
+    known = {(gid, pid) for gid, pid in s.execute(
+        select(MatchCandidate.game_id, MatchCandidate.store_product_id)
+        .where(MatchCandidate.store_id == "gog"))}
+    reviews = [r for r in reviews if (r[1].id, r[2].product_id) not in known]
     reviews.sort(key=lambda r: -r[0])
     keep = reviews if review_cap is None else reviews[:max(0, review_cap)]
     for score, game, raw in keep:
