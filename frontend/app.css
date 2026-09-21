@@ -1,0 +1,150 @@
+/* PlayMatch UI. Tokens first; components below are grouped by view. */
+
+@font-face{font-family:"Bricolage Grotesque";src:url(fonts/bricolage-grotesque.woff2) format("woff2");font-weight:200 800;font-display:swap}
+@font-face{font-family:"Instrument Sans";src:url(fonts/instrument-sans.woff2) format("woff2");font-weight:400 700;font-display:swap}
+
+:root{
+  --paper:#F3F1EC;--surface:#FBFAF7;--ink:#161A22;--slate:#5D6573;--line:#D9D6CE;
+  --deal:#0B7F52;--on-deal:#FFFFFF;--deal-ink:#0A6B43;--deal-wash:#E1F1E8;
+  --c-steam:#1479B8;--c-gog:#8F3FC4;--c-epic:#D9480F;--c-other:#5D6573;
+  --display:"Bricolage Grotesque","Segoe UI",system-ui,sans-serif;
+  --body:"Instrument Sans","Segoe UI",system-ui,sans-serif;
+  --gutter:20px;
+}
+@media (prefers-color-scheme:dark){:root{
+  --paper:#12151B;--surface:#1A1E26;--ink:#ECEEF2;--slate:#9BA3B1;--line:#2C323D;
+  --deal:#3DD68C;--on-deal:#08160E;--deal-ink:#5FE0A2;--deal-wash:#12301F;
+  --c-steam:#4DB3F0;--c-gog:#BC8AEA;--c-epic:#FF8A4C;--c-other:#9BA3B1;
+}}
+@media (max-width:600px){:root{--gutter:16px}}
+
+*{box-sizing:border-box}
+html{scroll-padding-top:72px}
+body{margin:0;background:var(--paper);color:var(--ink);font:16px/1.55 var(--body);-webkit-font-smoothing:antialiased}
+h1,h2,h3{font-family:var(--display);margin:0;font-weight:700;letter-spacing:-.015em;line-height:1.1}
+h1{font-size:clamp(2rem,5vw,3.25rem);letter-spacing:-.025em;line-height:1.04}
+h2{font-size:1.4rem}
+h1:focus{outline:none}
+p{margin:0}
+a{color:inherit}
+table{width:100%;border-collapse:collapse}
+th,td{text-align:left;padding:12px 10px 12px 0;border-bottom:1px solid var(--line);vertical-align:top}
+th{color:var(--slate);font-weight:500;font-size:.85rem;padding-top:0}
+td.num,th.num{font-variant-numeric:tabular-nums}
+:focus-visible{outline:3px solid var(--ink);outline-offset:2px;border-radius:4px}
+.muted{color:var(--slate);font-size:.875rem}
+.wrap{max-width:1040px;margin:0 auto;padding-inline:var(--gutter)}
+.vh{position:absolute;width:1px;height:1px;overflow:hidden;clip:rect(0 0 0 0);white-space:nowrap}
+.scroll{overflow-x:auto}
+
+/* ---- skip link + sticky nav ------------------------------------------- */
+.skip{position:absolute;left:var(--gutter);top:-100px;background:var(--ink);color:var(--paper);padding:8px 14px;border-radius:6px;z-index:40;text-decoration:none}
+.skip:focus{top:8px}
+.nav{position:sticky;top:0;z-index:30;background:var(--paper);border-bottom:1px solid var(--line)}
+@supports (backdrop-filter:blur(1px)) and (background:color-mix(in srgb,red,blue)){
+  .nav{background:color-mix(in srgb,var(--paper) 86%,transparent);backdrop-filter:blur(12px)}
+}
+.nav-inner{max-width:1040px;margin:0 auto;padding:0 var(--gutter);min-height:60px;display:flex;align-items:center;gap:20px}
+.brand{display:flex;align-items:center;gap:8px;text-decoration:none;font:800 1.3rem/1 var(--display);letter-spacing:-.03em}
+.brand svg{width:24px;height:24px;flex:none}
+.nav-links{display:flex;gap:4px;list-style:none;margin:0;padding:0}
+.nav-links a{display:block;padding:18px 10px 16px;text-decoration:none;font-weight:500;color:var(--slate);border-bottom:2px solid transparent}
+.nav-links a:hover{color:var(--ink)}
+.nav-links a.is-active{color:var(--ink);border-bottom-color:var(--ink)}
+.nav-tools{margin-left:auto;display:flex;gap:8px}
+select,input{font:inherit;color:var(--ink)}
+select{appearance:none;background-color:var(--surface);
+  background-image:linear-gradient(45deg,transparent 50%,currentColor 50%),linear-gradient(135deg,currentColor 50%,transparent 50%);
+  background-position:calc(100% - 15px) 55%,calc(100% - 10px) 55%;background-size:5px 5px;background-repeat:no-repeat;
+  border:1px solid var(--line);border-radius:8px;padding:7px 28px 7px 12px;font-size:.9rem;cursor:pointer}
+select:hover{border-color:var(--slate)}
+@media (max-width:480px){.nav-inner{gap:8px}.brand span{font-size:1.15rem}.nav-links a{padding-inline:6px}select{padding-left:8px}}
+
+/* ---- games list -------------------------------------------------------- */
+.intro{padding:44px 0 28px}
+.intro p{max-width:34rem;margin-top:14px;color:var(--slate);font-size:1.075rem}
+.search{display:block;width:100%;max-width:640px;margin-top:26px;padding:15px 18px;font-size:1.05rem;background:var(--surface);border:1.5px solid var(--ink);border-radius:10px}
+.search::placeholder{color:var(--slate)}
+.count{margin:22px 0 14px}
+.grid{list-style:none;margin:0;padding:0 0 72px;display:grid;grid-template-columns:repeat(auto-fill,minmax(230px,1fr));gap:20px}
+.game{display:block;text-decoration:none;background:var(--surface);border:1px solid var(--line);border-radius:10px;overflow:hidden;height:100%}
+.game:hover{border-color:var(--ink)}
+.game:hover .game-title{text-decoration:underline;text-underline-offset:3px}
+.game-body{display:flex;align-items:baseline;justify-content:space-between;gap:10px;padding:12px 14px 14px}
+.game-title{font:600 1.05rem/1.25 var(--display)}
+.game-year{color:var(--slate);font-size:.85rem;font-variant-numeric:tabular-nums}
+.art{display:block;width:100%;height:auto;aspect-ratio:460/215;object-fit:cover;background:var(--line)}
+.art.tile{display:flex;align-items:flex-end;padding:14px;background:hsl(var(--h) 28% 32%);color:#fff;font:700 1.35rem/1.05 var(--display);letter-spacing:-.02em;overflow:hidden}
+.notice{padding:28px 0 72px;max-width:34rem}
+.notice strong{display:block;font:600 1.15rem var(--display);margin-bottom:6px}
+.notice p{color:var(--slate)}
+.btn{display:inline-block;margin-top:14px;padding:9px 16px;font:600 .95rem var(--body);color:var(--paper);background:var(--ink);border:0;border-radius:8px;cursor:pointer;text-decoration:none}
+
+/* ---- game profile ------------------------------------------------------ */
+.back{display:inline-flex;align-items:center;gap:6px;padding:20px 0 0;color:var(--slate);text-decoration:none;font-weight:500}
+.back:hover{color:var(--ink)}
+.back svg{width:16px;height:16px}
+.pf-head{position:relative;isolation:isolate;overflow:hidden}
+.pf-head::before{content:"";position:absolute;inset:-60px;background:var(--art,none) center/cover;filter:blur(38px) saturate(1.25);opacity:.4;z-index:-2}
+.pf-head::after{content:"";position:absolute;inset:0;background:linear-gradient(to bottom,transparent 35%,var(--paper));z-index:-1}
+.pf-grid{display:grid;grid-template-columns:minmax(0,460px) 1fr;gap:16px 40px;align-items:center;padding-top:20px;padding-bottom:40px}
+.pf-cover{border-radius:10px;overflow:hidden;border:1px solid color-mix(in srgb,var(--ink) 18%,transparent)}
+.pf-year{margin-top:8px;color:var(--slate);font-variant-numeric:tabular-nums}
+.pf-best{margin-top:22px}
+.pf-best .label{display:block;margin-bottom:8px;color:var(--slate);font-size:.9rem}
+.pf-best-row{display:flex;flex-wrap:wrap;align-items:center;gap:8px 14px}
+.pf-facts{margin-top:14px;display:flex;flex-wrap:wrap;gap:6px 18px;font-size:.92rem;color:var(--slate)}
+.pf-facts b{color:var(--ink);font-weight:600;font-variant-numeric:tabular-nums}
+.at-low{display:inline-flex;align-items:center;gap:6px;color:var(--deal-ink);font-weight:600}
+.at-low svg{width:16px;height:16px}
+.panel{padding:40px 0 8px;border-top:1px solid var(--line)}
+.panel:first-of-type{border-top:0}
+.panel-head{display:flex;flex-wrap:wrap;align-items:baseline;justify-content:space-between;gap:4px 20px;margin-bottom:18px}
+.pf-body{padding-bottom:72px}
+@media (max-width:760px){.pf-grid{grid-template-columns:1fr;padding-bottom:28px}}
+
+/* price tag: the one signature element. The punched hole marks it as a shelf tag. */
+.ptag{position:relative;display:inline-block;padding:3px 12px 3px 26px;border:1.5px solid var(--ink);border-radius:4px 9px 9px 4px;font:700 1.05rem/1.3 var(--display);font-variant-numeric:tabular-nums;white-space:nowrap}
+.ptag::before{content:"";position:absolute;left:9px;top:50%;width:7px;height:7px;margin-top:-3.5px;border:1.5px solid currentColor;border-radius:50%}
+.ptag.is-low{background:var(--deal);border-color:var(--deal);color:var(--on-deal)}
+.ptag.big{font-size:1.75rem;padding:4px 16px 4px 34px;border-width:2px}
+.ptag.big::before{left:13px;width:9px;height:9px;margin-top:-4.5px}
+.was{color:var(--slate);text-decoration:line-through;font-size:.9rem;margin-left:6px;font-variant-numeric:tabular-nums}
+.off{font-weight:600;color:var(--deal-ink);margin-left:6px;font-size:.9rem}
+
+.store-name{font:600 1.05rem var(--display)}
+.kind{display:inline-block;margin-left:8px;padding:1px 8px;border:1px solid var(--line);border-radius:99px;color:var(--slate);font-size:.75rem;vertical-align:1px}
+.kind.mk{border-color:transparent;background:color-mix(in srgb,#E0A100 22%,transparent);color:var(--ink)}
+.prices td{vertical-align:middle}
+.prices .go{white-space:nowrap}
+.prices .go a{font-weight:600}
+.conv{display:block;margin-top:4px}
+
+/* ---- history chart ----------------------------------------------------- */
+.legend{display:flex;flex-wrap:wrap;gap:6px 18px;margin:0 0 6px;padding:0;list-style:none;font-size:.9rem}
+.legend li{display:flex;align-items:center;gap:7px}
+.legend svg{width:12px;height:12px}
+.chart{position:relative;margin-top:4px}
+.chart svg{display:block;width:100%;height:auto;touch-action:pan-y}
+.chart svg:focus-visible{outline-offset:4px}
+.chart text{font:12px var(--body);fill:var(--slate);font-variant-numeric:tabular-nums}
+.tip{position:absolute;z-index:2;pointer-events:none;min-width:150px;padding:10px 12px;background:var(--ink);color:var(--paper);border-radius:8px;font-size:.85rem;line-height:1.4}
+.tip .d{font:600 .9rem var(--display);margin-bottom:4px}
+.tip div.r{display:flex;align-items:center;gap:8px;justify-content:space-between}
+.tip .r span:first-child{display:flex;align-items:center;gap:6px}
+.tip svg{width:10px;height:10px}
+.tip b{font-variant-numeric:tabular-nums}
+.stats{margin-top:28px}
+.stats td:first-child{font-weight:600}
+.stats td,.stats th{white-space:nowrap;padding-right:22px}
+.prices tr:last-child td,.stats tr:last-child td{border-bottom:0}
+.samples{margin-top:20px}
+.samples summary{cursor:pointer;font-weight:600;padding:6px 0}
+.samples .scroll{max-height:320px;overflow:auto;margin-top:8px;border-top:1px solid var(--line)}
+.samples th{position:sticky;top:0;background:var(--paper);padding-top:10px}
+.loading{padding:64px 0;color:var(--slate)}
+
+@media (prefers-reduced-motion:no-preference){
+  .pf-head::before{animation:backdrop .5s ease-out}
+  @keyframes backdrop{from{opacity:0}to{opacity:.4}}
+}
