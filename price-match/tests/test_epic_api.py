@@ -1,3 +1,5 @@
+from sqlalchemy.exc import IntegrityError
+
 from app import epic_lookup, service
 from tests.test_epic_lookup import FakeEpic, epic_hades, new_gate
 
@@ -29,3 +31,30 @@ def test_epic_check_for_a_disabled_region_is_400(api, db_session, monkeypatch):
     g = service.upsert_game(db_session, "Hades", 1145360, 2020)
     wire(monkeypatch, FakeEpic())
     assert api.post(f"/api/games/{g.id}/epic-check?region=JP").status_code == 400
+
+
+def _boom(*_a, **_k):
+    raise IntegrityError("insert", {}, Exception("UNIQUE constraint failed"))
+
+
+def test_a_racing_listing_insert_for_the_same_game_reports_fresh_not_500(api, db_session, monkeypatch):
+    """Two requests for a never-checked game can both pass the cooldown check and race to
+    insert the same listing; the loser's write collides on the unique constraint and must
+    report `fresh` (as if the other request's check happened just first), not 500."""
+    g = service.upsert_game(db_session, "Hades", 1145360, 2020)
+    monkeypatch.setattr(service, "record_snapshot", _boom)
+    wire(monkeypatch, FakeEpic([epic_hades()]))
+    r = api.post(f"/api/games/{g.id}/epic-check")
+    assert r.status_code == 200
+    assert r.json()["status"] == "fresh"
+
+
+def test_a_racing_price_check_insert_for_the_same_game_reports_fresh_not_500(api, db_session, monkeypatch):
+    """The listing insert can win while the price_checks insert still collides with the
+    other request's own mark_checked; that must also report `fresh`, not 500."""
+    g = service.upsert_game(db_session, "Hades", 1145360, 2020)
+    monkeypatch.setattr(service, "mark_checked", _boom)
+    wire(monkeypatch, FakeEpic([epic_hades()]))
+    r = api.post(f"/api/games/{g.id}/epic-check")
+    assert r.status_code == 200
+    assert r.json()["status"] == "fresh"

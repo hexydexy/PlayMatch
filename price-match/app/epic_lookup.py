@@ -10,6 +10,7 @@ import logging
 import time
 from datetime import timedelta
 
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from . import config, service
@@ -65,12 +66,24 @@ def check_epic(s: Session, game: Game, region: str, connector=None, gate: Gate |
     if not gate.allow():
         return {"status": "busy", "checked_at": _iso(row)}
     s.commit()  # end the read transaction: the connection must not be held through the Epic call
-    report = service.ingest_game(s, game, region, connectors=[connector or EpicConnector()], blocked=set())
+    try:
+        report = service.ingest_game(s, game, region, connectors=[connector or EpicConnector()], blocked=set())
+    except IntegrityError:
+        # Another request for the same game/region won this race and already committed
+        # the listing/snapshot; treat this one as if it arrived just after that one did.
+        s.rollback()
+        row = s.get(PriceCheck, (game.id, "epic", region))
+        return {"status": "fresh", "checked_at": _iso(row)}
     outcome = report["stores"].get("epic", "")
     if outcome.startswith("rate_limited"):
         gate.block()
         return {"status": "unavailable", "checked_at": _iso(row)}
     if outcome.startswith("error"):
         return {"status": "unavailable", "checked_at": _iso(row)}
-    service.mark_checked(s, [game.id], "epic", region, now)
+    try:
+        service.mark_checked(s, [game.id], "epic", region, now)
+    except IntegrityError:
+        s.rollback()
+        row = s.get(PriceCheck, (game.id, "epic", region))
+        return {"status": "fresh", "checked_at": _iso(row)}
     return {"status": "checked", "checked_at": service.as_utc(now).isoformat()}

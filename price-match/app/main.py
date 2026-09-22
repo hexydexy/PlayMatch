@@ -93,7 +93,7 @@ def currencies():
 
 @app.get("/api/games")
 def search_games(response: Response, q: str = Query("", max_length=100),
-                 limit: int = Query(20, ge=1, le=100), offset: int = Query(0, ge=0),
+                 limit: int = Query(20, ge=1, le=100), offset: int = Query(0, ge=0, le=2**31 - 1),
                  s: Session = Depends(get_session)):
     total = select(func.count(Game.id))
     stmt = select(Game).order_by(Game.title, Game.id).limit(limit).offset(offset)

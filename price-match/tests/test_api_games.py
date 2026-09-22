@@ -37,6 +37,13 @@ def test_limit_and_offset_are_validated(api, db_session):
     assert api.get("/api/games", params={"offset": -1}).status_code == 422
 
 
+def test_a_huge_offset_is_rejected_rather_than_overflowing_the_database_column(api, db_session):
+    # An offset this large overflows SQLite's (and Postgres bigint's) integer column, so it
+    # must be a validation error, not a request that reaches the database and 500s.
+    assert api.get("/api/games", params={"offset": 2**63}).status_code == 422
+    assert api.get("/api/games", params={"offset": 2**31 - 1}).status_code == 200
+
+
 def test_default_limit_is_20(api, db_session):
     add_games(db_session, 30)
     assert len(api.get("/api/games").json()) == 20
