@@ -14,11 +14,17 @@ const store = {
   get: k => { try { return localStorage.getItem(k); } catch { return null; } },
   set: (k, v) => { try { localStorage.setItem(k, v); } catch {} },
 };
-const state = {view: null, seq: 0, searchSeq: 0, q: "", games: null, scrollY: 0,
-               gameId: null, region: "US", regions: [], currency: "USD", ro: null};
+const state = {view: null, seq: 0, searchSeq: 0, searching: false, q: "", shownQ: "", games: null, total: 0, scrollY: 0,
+               gameId: null, region: "US", regions: [], currency: "USD", ro: null, epicTried: null};
 
 const esc = s => String(s ?? "").replace(/[&<>"']/g, c => ({"&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;"}[c]));
 const get = async p => { const r = await fetch(API + p); if (!r.ok) throw new Error(r.status); return r.json(); };
+const post = async p => { const r = await fetch(API + p, {method: "POST"}); if (!r.ok) throw new Error(r.status); return r.json(); };
+const EPIC_STALE_MS = 24 * 3600e3, OLD_PRICE_MS = 14 * 24 * 3600e3;
+// A persistent live region outside #view, so a screen reader hears Epic-check updates even
+// when the profile is fully re-rendered (a freshly-inserted role="status" node with content
+// already in place is not reliably announced).
+const announce = msg => { const el = $("#live"); if (el) el.textContent = msg; };
 const money = (c, cur, compact) => c == null ? "—" : new Intl.NumberFormat(undefined,
   {style: "currency", currency: cur, ...(compact && c % 100 === 0 ? {minimumFractionDigits: 0, maximumFractionDigits: 0} : {})}).format(c / 100);
 const fmtDate = (t, year) => new Intl.DateTimeFormat(undefined, {month: "short", day: "numeric", ...(year ? {year: "numeric"} : {})}).format(t);
@@ -95,7 +101,8 @@ function route() {
   if (state.view === "list") state.scrollY = window.scrollY;   // remember where the list was
   const m = /^#\/game\/(\d+)\/?$/.exec(location.hash);
   const seq = ++state.seq;
-  if (m) { state.view = "game"; state.gameId = +m[1]; showGame(seq); }
+  announce("");   // a stale or repeated Epic-check announcement should not linger or go unheard on the new page
+  if (m) { state.view = "game"; state.gameId = +m[1]; state.epicTried = null; showGame(seq); }
   else { state.view = "list"; showList(); }
   syncNav();
 }
@@ -103,6 +110,14 @@ const reloadGame = () => { if (state.view === "game") showGame(++state.seq, true
 const focusHeading = () => { const h = $("h1", view); if (h) { h.tabIndex = -1; h.focus({preventScroll: true}); } };
 
 /* ---- games list --------------------------------------------------------- */
+
+const PAGE = 48;
+
+async function getPage(q, offset) {
+  const r = await fetch(`${API}/games?limit=${PAGE}&offset=${offset}&q=${encodeURIComponent(q)}`);
+  if (!r.ok) throw new Error(r.status);
+  return {games: await r.json(), total: Number(r.headers.get("X-Total-Count")) || 0};
+}
 
 function showList() {
   document.title = "PlayMatch";
@@ -115,6 +130,7 @@ function showList() {
     </section>
     <p id="count" class="count muted" role="status"></p>
     <ul id="grid" class="grid"></ul>
+    <div id="more-wrap" class="more-wrap"></div>
     <div id="notice"></div>
   </div>`;
   const q = $("#q");
@@ -131,30 +147,54 @@ function showList() {
 async function search(q) {
   state.q = q;
   const n = ++state.searchSeq;
+  state.searching = true;
   try {
-    const games = await get(`/games?limit=50&q=${encodeURIComponent(q)}`);
+    const {games, total} = await getPage(q, 0);
     if (n !== state.searchSeq || state.view !== "list") return;
-    state.games = games;
+    state.games = games; state.total = total; state.shownQ = q;
     renderGrid();
   } catch {
     if (n !== state.searchSeq || state.view !== "list") return;
-    $("#grid").innerHTML = ""; $("#count").textContent = "";
+    $("#grid").innerHTML = ""; $("#count").textContent = ""; $("#more-wrap").innerHTML = "";
     $("#notice").innerHTML = `<div class="notice"><strong>Can't reach the price service</strong>
       <p>Check that PlayMatch is running, then try again.</p><button class="btn" id="retry">Try again</button></div>`;
     $("#retry").onclick = () => search(state.q);
+  } finally {
+    if (n === state.searchSeq) state.searching = false;
+  }
+}
+
+async function loadMore() {
+  if (state.searching) return;
+  const seq = state.searchSeq, shown = state.games.length, btn = $("#more");
+  btn.disabled = true; btn.textContent = "Loading…";
+  try {
+    const {games, total} = await getPage(state.q, shown);
+    if (seq !== state.searchSeq || state.view !== "list") return;   // a newer search replaced this list
+    state.games = state.games.concat(games); state.total = total;
+    renderGrid();
+    const first = view.querySelectorAll("#grid .game")[shown];
+    if (first) first.focus({preventScroll: true});
+  } catch {
+    if (seq === state.searchSeq && btn.isConnected) { btn.disabled = false; btn.textContent = "Couldn't load more. Try again"; }
   }
 }
 
 function renderGrid() {
-  const games = state.games || [];
+  // Use the query the grid was actually fetched with, not state.q, which may already have
+  // moved on to a newer (still in-flight) search by the time this cached list is re-shown.
+  const games = state.games || [], total = state.total.toLocaleString(), q = state.shownQ;
   $("#notice").innerHTML = "";
-  $("#count").textContent = state.q
-    ? `${games.length} ${games.length === 1 ? "game matches" : "games match"} “${state.q}”`
-    : `${games.length} tracked ${games.length === 1 ? "game" : "games"}`;
+  $("#count").textContent = q
+    ? `${total} ${state.total === 1 ? "game matches" : "games match"} “${q}”`
+    : `${total} tracked ${state.total === 1 ? "game" : "games"}`;
   $("#grid").innerHTML = games.map(g => `<li><a class="game" href="#/game/${g.id}">${art(g)}
       <span class="game-body"><span class="game-title">${esc(g.title)}</span><span class="game-year">${g.release_year ?? ""}</span></span></a></li>`).join("");
-  if (!games.length) $("#notice").innerHTML = state.q
-    ? `<div class="notice"><strong>No tracked game matches “${esc(state.q)}”</strong><p>Check the spelling, or try a shorter title.</p></div>`
+  $("#more-wrap").innerHTML = games.length < state.total
+    ? `<button class="btn more" id="more">Load more</button><p class="muted">Showing ${games.length.toLocaleString()} of ${total}</p>` : "";
+  const more = $("#more"); if (more) more.onclick = loadMore;
+  if (!games.length) $("#notice").innerHTML = q
+    ? `<div class="notice"><strong>No tracked game matches “${esc(q)}”</strong><p>Check the spelling, or try a shorter title.</p></div>`
     : `<div class="notice"><strong>No games are tracked yet</strong><p>Seed the list with <code>snapshot --seed</code>, or add a game through the admin API.</p></div>`;
 }
 
@@ -162,19 +202,28 @@ function renderGrid() {
 
 const backLink = `<a class="back" href="#/"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M10 3 5 8l5 5"/></svg>All games</a>`;
 
-async function showGame(seq, keepScroll) {
+async function showGame(seq, keepScroll, quiet) {
   if (state.ro) { state.ro.disconnect(); state.ro = null; }
-  if (!keepScroll) window.scrollTo(0, 0);
-  view.innerHTML = `<div class="wrap">${backLink}<p class="loading" role="status">Loading prices…</p></div>`;
+  if (!quiet) {
+    if (!keepScroll) window.scrollTo(0, 0);
+    view.innerHTML = `<div class="wrap">${backLink}<p class="loading" role="status">Loading prices…</p></div>`;
+  }
   const id = state.gameId, qs = `currency=${state.currency}&region=${state.region}`;
   try {
     const [p, h] = await Promise.all([get(`/games/${id}/prices?${qs}`), get(`/games/${id}/history?${qs}&days=365`)]);
     if (seq !== state.seq) return;
+    const epicKey = `${id}:${state.region}`;
+    const lookup = !quiet && needsEpicCheck(p) && state.epicTried !== epicKey;
+    // Capture right before the DOM swap and restore right after it, not around the fetch above:
+    // that window is synchronous, so nothing the user does in between can be clobbered.
+    const restore = quiet ? captureViewState() : null;
     document.title = `${p.game.title} – PlayMatch`;
-    view.innerHTML = renderProfile(p, h);
+    view.innerHTML = renderProfile(p, h, lookup ? "checking" : null);
     const model = buildModel(h, p);
     if (model) mountChart($("#chart"), model, h.currency, p.game.title);
-    if (!keepScroll) focusHeading();
+    if (restore) restoreViewState(restore);
+    if (!quiet && !keepScroll) focusHeading();
+    if (lookup) { state.epicTried = epicKey; announce(EPIC_NOTE.checking); runEpicCheck(seq); }
   } catch (e) {
     if (seq !== state.seq) return;
     const missing = e.message === "404";
@@ -185,9 +234,49 @@ async function showGame(seq, keepScroll) {
   }
 }
 
+// The Epic price is fetched when a game is opened and it was not checked in the last day.
+function needsEpicCheck(p) {
+  const t = p.checks && p.checks.epic;
+  return !t || Date.now() - Date.parse(t) > EPIC_STALE_MS;
+}
+
+const EPIC_NOTE = {
+  checking: "Checking the Epic price…",
+  busy: "Epic lookups are busy. Open this game again in a minute.",
+  unavailable: "Epic price unavailable right now. Open this game again later.",
+};
+
+// The quiet re-render replaces the whole profile, which would otherwise silently drop focus
+// to <body>, collapse an open "All sample dates" and move the scroll position; save and put
+// them back so a background price refresh the user did not ask for does not disturb them.
+function captureViewState() {
+  return {scrollY: window.scrollY, hadFocus: view.contains(document.activeElement),
+          samplesOpen: $(".samples", view)?.open};
+}
+function restoreViewState(st) {
+  const samples = $(".samples", view);
+  if (samples && st.samplesOpen) samples.open = true;
+  if (st.hadFocus) focusHeading();
+  window.scrollTo(0, st.scrollY);
+}
+
+async function runEpicCheck(seq) {
+  let status = "unavailable";
+  try { status = (await post(`/games/${state.gameId}/epic-check?region=${state.region}`)).status; } catch {}
+  if (seq !== state.seq) return;
+  if (status === "checked" || status === "fresh") {
+    announce("Epic price checked.");
+    showGame(seq, true, true);   // re-render with the new prices; showGame itself preserves scroll/focus/details
+    return;
+  }
+  announce(EPIC_NOTE[status] || EPIC_NOTE.unavailable);
+  const cell = $("#epic-row td.muted");
+  if (cell) cell.textContent = EPIC_NOTE[status] || EPIC_NOTE.unavailable;
+}
+
 const ptag = (cents, cur, cls = "") => `<span class="ptag ${cls}">${money(cents, cur)}</span>`;
 
-function renderProfile(p, h) {
+function renderProfile(p, h, epic) {
   const g = p.game, cur = p.currency;
   const best = p.prices.find(r => r.is_lowest) || p.prices[0];
   const safeArt = g.image_url && /^https:\/\/[^\s'"()]+$/.test(g.image_url) ? `style="--art:url(${g.image_url})"` : "";
@@ -202,18 +291,25 @@ function renderProfile(p, h) {
   return `<section class="pf-head" ${safeArt}><div class="wrap">${backLink}
       <div class="pf-grid"><div class="pf-cover">${art(g, "", true)}</div>
         <div><h1>${esc(g.title)}</h1>${g.release_year ? `<p class="pf-year">${g.release_year}</p>` : ""}${headInfo}</div></div></div></section>
-    <div class="wrap pf-body">${p.prices.length ? pricesPanel(p) : ""}${historyPanel(h, p)}</div>`;
+    <div class="wrap pf-body">${p.prices.length || epic ? pricesPanel(p, epic) : ""}${historyPanel(h, p)}</div>`;
 }
 
-function pricesPanel(p) {
-  const rows = p.prices.map(r => `<tr>
+function pricesPanel(p, epic) {
+  const rows = p.prices.map(r => {
+    const old = r.checked_at && Date.now() - Date.parse(r.checked_at) > OLD_PRICE_MS;
+    const checked = r.checked_at ? `<span class="conv muted ${old ? "stale" : ""}">${old ? "Price may be out of date. " : ""}Checked ${fmtDate(Date.parse(r.checked_at), true)}</span>` : "";
+    return `<tr>
     <td><span class="store-name">${esc(r.store)}</span><span class="kind ${r.store_type === "marketplace" ? "mk" : ""}">${esc(r.label)}</span></td>
     <td>${ptag(r.price_cents, r.currency, r.is_lowest ? "is-low" : "")}${r.is_lowest ? `<span class="vh"> lowest</span>` : ""}
       ${r.discount_pct ? `<span class="was">${money(r.base_price_cents, r.currency)}</span><span class="off">−${r.discount_pct}%</span>` : ""}
-      ${r.converted ? `<span class="conv muted">converted from ${money(r.native_price_cents, r.native_currency)}</span>` : ""}</td>
-    <td class="go">${r.url ? `<a href="${esc(r.url)}" target="_blank" rel="noopener noreferrer">View<span class="vh"> ${esc(p.game.title)} on ${esc(r.store)}</span></a>` : ""}</td></tr>`).join("");
+      ${r.converted ? `<span class="conv muted">converted from ${money(r.native_price_cents, r.native_currency)}</span>` : ""}${checked}</td>
+    <td class="go">${r.url ? `<a href="${esc(r.url)}" target="_blank" rel="noopener noreferrer">View<span class="vh"> ${esc(p.game.title)} on ${esc(r.store)}</span></a>` : ""}</td></tr>`;
+  }).join("");
+  const hasEpic = p.prices.some(r => r.store_id === "epic");
+  const epicRow = epic && !hasEpic
+    ? `<tr id="epic-row"><td><span class="store-name">Epic Games</span></td><td colspan="2" class="muted">${EPIC_NOTE[epic]}</td></tr>` : "";
   return `<section class="panel"><div class="panel-head"><h2>Prices by store</h2></div>
-    <div class="scroll"><table class="prices"><thead><tr><th>Store</th><th>Price</th><th><span class="vh">Link</span></th></tr></thead><tbody>${rows}</tbody></table></div></section>`;
+    <div class="scroll"><table class="prices"><thead><tr><th>Store</th><th>Price</th><th><span class="vh">Link</span></th></tr></thead><tbody>${rows}${epicRow}</tbody></table></div></section>`;
 }
 
 /* ---- price history ------------------------------------------------------ */
@@ -253,7 +349,7 @@ function markerSvg(shape, c, size = 12) {
 function historyPanel(h, p) {
   const m = buildModel(h, p);
   if (!m) return `<section class="panel"><div class="panel-head"><h2>Price history</h2></div>
-    <p class="muted">No price history yet. Samples are recorded once a day.</p></section>`;
+    <p class="muted">No price history yet. A price is recorded the first time PlayMatch sees it, and again whenever it changes.</p></section>`;
   const cur = h.currency, n = m.stores.reduce((a, s) => a + s.points.length, 0);
   const span = m.days.length === 1 ? fmtDate(m.t0, true) : `${fmtDate(m.t0, true)} to ${fmtDate(m.t1, true)}`;
   const caption = `${m.days.length} sample ${m.days.length === 1 ? "date" : "dates"}, ${span}. ${n <= DENSE ? "Each marker is one recorded price." : "Hover or use the arrow keys to read the price on any date."}`;
@@ -265,7 +361,7 @@ function historyPanel(h, p) {
       <p class="muted">${caption}</p></div>
     <ul class="legend">${legend}</ul>
     <div id="chart" class="chart"></div>
-    <div class="scroll stats"><table><thead><tr><th>Store</th><th class="num">Low</th><th class="num">Average</th><th class="num">High</th><th class="num">Samples</th><th>Sampled</th></tr></thead><tbody>${stats}</tbody></table></div>
+    <div class="scroll stats"><table><thead><tr><th>Store</th><th class="num">Low</th><th class="num">Average per sample</th><th class="num">High</th><th class="num">Samples</th><th>Sampled</th></tr></thead><tbody>${stats}</tbody></table></div>
     <details class="samples"><summary>All sample dates</summary><div class="scroll"><table><thead><tr><th>Date</th>${m.stores.map(s => `<th>${esc(s.name)}</th>`).join("")}</tr></thead><tbody>${sampleRows}</tbody></table></div></details>
   </section>`;
 }

@@ -91,3 +91,17 @@ class JobRun(Base):
     outcome: Mapped[str] = mapped_column(String(16))  # ok | no_match | error | rate_limited
     detail: Mapped[str | None] = mapped_column(String(300))
     at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, index=True)
+
+
+class PriceCheck(Base):
+    """When a store was last asked about a game.
+
+    A snapshot's timestamp is only the last price *change* (unchanged prices are
+    not re-stored), so "last checked" needs its own record. It also orders the bulk
+    Steam refresh (never-checked games first) and drives the Epic on-demand cooldown.
+    """
+    __tablename__ = "price_checks"
+    game_id: Mapped[int] = mapped_column(ForeignKey("games.id"), primary_key=True)
+    store_id: Mapped[str] = mapped_column(String(20), primary_key=True)
+    region: Mapped[str] = mapped_column(String(8), primary_key=True)
+    checked_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, index=True)

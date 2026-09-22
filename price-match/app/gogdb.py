@@ -26,7 +26,7 @@ import json
 import logging
 import re
 import tarfile
-from collections import defaultdict
+from collections import Counter, defaultdict
 from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 
@@ -37,7 +37,7 @@ from sqlalchemy.orm import Session
 from . import config, regions
 from .connectors.base import RawListing, client
 from .matcher import evaluate
-from .models import Game, Listing, PriceSnapshot
+from .models import Game, Listing, MatchCandidate, PriceSnapshot
 from .service import (get_or_create_listing, log_job, queue_review)
 
 log = logging.getLogger("playmatch.gogdb")
@@ -201,13 +201,14 @@ def _naive(d: datetime) -> datetime:
     return d.astimezone(timezone.utc).replace(tzinfo=None)
 
 
-def import_archive(s: Session, path: Path, region_list=None) -> dict:
+def import_archive(s: Session, path: Path, region_list=None, review_cap: int | None = None) -> dict:
     region_list = region_list or regions.enabled()
     wanted = {r.code: r.currency for r in region_list}
     products, prices, seen = scan_archive(path, wanted)
     stamp = archive_date(path)
     report = {"archive": path.name, "products": len(products), "products_with_prices": len(prices),
-              "files_seen": seen, "matched": 0, "snapshots_added": 0, "review_queued": 0}
+              "files_seen": seen, "matched": 0, "snapshots_added": 0, "review_queued": 0,
+              "review_dropped": 0, "claimed_elsewhere": 0}
     if not prices:
         log_job(s, "gogdb_import", "gog", ",".join(wanted), "error",
                 f"no prices parsed (saw {seen}); run --inspect")
@@ -219,7 +220,15 @@ def import_archive(s: Session, path: Path, region_list=None) -> dict:
     from .matcher import normalize
     norm = [normalize(pool[p]["title"]) for p in pids]
 
-    for game in s.scalars(select(Game)).all():
+    def review_listing(p):
+        latest = next(iter(prices[p["id"]].values()))[-1]
+        return RawListing("gog", p["id"], p["title"], p["url"], latest[3], latest[2], latest[1],
+                          region=next(iter(prices[p["id"]])), release_year=p["year"])
+
+    all_games = s.scalars(select(Game)).all()
+    title_counts = Counter(g.norm_title for g in all_games)
+    reviews = []  # (score, game, raw): queued after the loop, best first, up to review_cap
+    for game in all_games:
         best = None
         for _, score, idx in process.extract(game.norm_title, norm, scorer=fuzz.ratio,
                                              limit=5, score_cutoff=85):
@@ -229,14 +238,19 @@ def import_archive(s: Session, path: Path, region_list=None) -> dict:
             if res.verdict == "match" and (best is None or res.score > best[1]):
                 best = (p, res.score)
             elif res.verdict == "review":
-                latest = next(iter(prices[p["id"]].values()))[-1]
-                queue_review(s, game, RawListing("gog", p["id"], p["title"], p["url"], latest[3], latest[2],
-                                                 latest[1], region=next(iter(prices[p["id"]])),
-                                                 release_year=p["year"]), res.score)
-                report["review_queued"] += 1
+                reviews.append((res.score, game, review_listing(p)))
         if not best:
             continue
         p = best[0]
+        if game.release_year is None and title_counts[game.norm_title] > 1:
+            # a year-less game sharing its title with others cannot tell which one GOG means
+            reviews.append((best[1], game, review_listing(p)))
+            continue
+        if s.scalar(select(Listing.id).where(
+                Listing.store_id == "gog", Listing.store_product_id == p["id"],
+                Listing.region.in_(prices[p["id"]]), Listing.game_id != game.id).limit(1)):
+            report["claimed_elsewhere"] += 1  # this GOG product already belongs to another game
+            continue
         report["matched"] += 1
         for region, recs in prices[p["id"]].items():
             listing = get_or_create_listing(s, game, "gog", p["id"], region, p["url"])
@@ -257,6 +271,16 @@ def import_archive(s: Session, path: Path, region_list=None) -> dict:
             s.add_all(new)
             report["snapshots_added"] += len(new)
         s.commit()
+    known = {(gid, pid) for gid, pid in s.execute(
+        select(MatchCandidate.game_id, MatchCandidate.store_product_id)
+        .where(MatchCandidate.store_id == "gog"))}
+    reviews = [r for r in reviews if (r[1].id, r[2].product_id) not in known]
+    reviews.sort(key=lambda r: -r[0])
+    keep = reviews if review_cap is None else reviews[:max(0, review_cap)]
+    for score, game, raw in keep:
+        queue_review(s, game, raw, score)
+    report["review_queued"] = len(keep)
+    report["review_dropped"] = len(reviews) - len(keep)
     log_job(s, "gogdb_import", "gog", ",".join(wanted), "ok" if report["matched"] else "no_match",
             f"{report['matched']} games, {report['snapshots_added']} snapshots")
     return report

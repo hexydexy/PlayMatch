@@ -2,17 +2,17 @@
 from __future__ import annotations
 
 import logging
-from datetime import timedelta
+from datetime import datetime, timedelta, timezone
 
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
-from . import fx, regions
+from . import config, fx, regions
 from .connectors.base import ConnectorError, RateLimited, RawListing, polite_sleep
 from .connectors.epic import EpicConnector
 from .connectors.steam import SteamConnector
 from .matcher import evaluate, normalize
-from .models import (Game, JobRun, Listing, MatchCandidate, PriceSnapshot,
+from .models import (Game, JobRun, Listing, MatchCandidate, PriceCheck, PriceSnapshot,
                      Store, utcnow)
 
 log = logging.getLogger("playmatch")
@@ -36,6 +36,28 @@ def seed_stores(s: Session):
 def log_job(s: Session, kind: str, store_id: str, region: str, outcome: str, detail: str | None = None):
     s.add(JobRun(kind=kind, store_id=store_id, region=region, outcome=outcome,
                  detail=(detail or "")[:300] or None))
+    s.commit()
+
+
+def as_utc(dt: datetime) -> datetime:
+    """SQLite hands back naive datetimes and Postgres aware ones; treat naive as UTC."""
+    return dt if dt.tzinfo else dt.replace(tzinfo=timezone.utc)
+
+
+def mark_checked(s: Session, game_ids: list[int], store_id: str, region: str,
+                 now: datetime | None = None) -> None:
+    """Record that `store_id` was asked about these games just now (insert or update)."""
+    if not game_ids:
+        return
+    now = now or utcnow()
+    have = {c.game_id: c for c in s.scalars(select(PriceCheck).where(
+        PriceCheck.game_id.in_(game_ids), PriceCheck.store_id == store_id,
+        PriceCheck.region == region))}
+    for gid in game_ids:
+        if gid in have:
+            have[gid].checked_at = now
+        else:
+            s.add(PriceCheck(game_id=gid, store_id=store_id, region=region, checked_at=now))
     s.commit()
 
 
@@ -77,6 +99,36 @@ def record_snapshot(s: Session, game: Game, raw: RawListing) -> PriceSnapshot:
                          discount_pct=raw.discount_pct)
     s.add(snap)
     s.commit()
+    return snap
+
+
+def latest_snapshot(s: Session, listing_id: int) -> PriceSnapshot | None:
+    return s.scalar(select(PriceSnapshot).where(PriceSnapshot.listing_id == listing_id)
+                    .order_by(PriceSnapshot.captured_at.desc(), PriceSnapshot.id.desc()).limit(1))
+
+
+def record_snapshot_if_due(s: Session, game: Game, raw: RawListing,
+                           now: datetime | None = None) -> PriceSnapshot | None:
+    """Like `record_snapshot`, but skips a price that has not changed.
+
+    A snapshot is stored when the price, base price or currency differs from the
+    latest one, or when the latest one is at least SNAPSHOT_HEARTBEAT_DAYS old (so the
+    history keeps regular sample dates). Flushes; the caller commits.
+    """
+    now = now or utcnow()
+    listing = get_or_create_listing(s, game, raw.store_id, raw.product_id, raw.region, raw.url)
+    last = latest_snapshot(s, listing.id)
+    if last is not None:
+        same = (last.price_cents, last.base_price_cents, last.currency) == \
+               (raw.price_cents, raw.base_price_cents, raw.currency)
+        if same and now - as_utc(last.captured_at) < timedelta(days=config.SNAPSHOT_HEARTBEAT_DAYS):
+            s.flush()
+            return None
+    snap = PriceSnapshot(listing_id=listing.id, price_cents=raw.price_cents,
+                         base_price_cents=raw.base_price_cents, currency=raw.currency,
+                         discount_pct=raw.discount_pct, captured_at=now)
+    s.add(snap)
+    s.flush()
     return snap
 
 
@@ -180,10 +232,12 @@ def current_prices(s: Session, game: Game, currency: str | None = None, region: 
     reg = regions.get(region)
     currency = (currency or reg.currency).upper()
     rows = []
+    latest_at: dict[str, datetime] = {}
     for snap, listing in _latest_snapshots(s, game.id, reg.code):
         price = fx.convert_cents(s, snap.price_cents, snap.currency, currency)
         base = fx.convert_cents(s, snap.base_price_cents, snap.currency, currency)
         store = s.get(Store, listing.store_id)
+        latest_at[store.id] = max(latest_at.get(store.id, snap.captured_at), snap.captured_at)
         rows.append({
             "store_id": store.id, "store": store.name, "store_type": store.type,
             "label": "Official store price",
@@ -194,6 +248,15 @@ def current_prices(s: Session, game: Game, currency: str | None = None, region: 
             "captured_at": snap.captured_at.isoformat(),
             "converted": snap.currency != currency,
         })
+    checks = {c.store_id: c.checked_at for c in s.scalars(select(PriceCheck).where(
+        PriceCheck.game_id == game.id, PriceCheck.region == reg.code))}
+
+    def checked(store_id: str) -> str | None:
+        ts = [as_utc(t) for t in (checks.get(store_id), latest_at.get(store_id)) if t]
+        return max(ts).isoformat() if ts else None
+
+    for r in rows:
+        r["checked_at"] = checked(r["store_id"])
     priced = [r for r in rows if r["price_cents"] is not None]
     lowest = min(priced, key=lambda r: r["price_cents"], default=None)
     for r in rows:
@@ -202,6 +265,7 @@ def current_prices(s: Session, game: Game, currency: str | None = None, region: 
     hist_low = min((p["price_cents"] for st in hist["stores"].values() for p in st["points"]), default=None)
     return {
         "game": game_dict(game), "region": reg.code, "currency": currency,
+        "checks": {sid: checked(sid) for sid in ("steam", "gog", "epic")},
         "prices": sorted(rows, key=lambda r: (r["price_cents"] is None, r["price_cents"] or 0)),
         "lowest_now_cents": lowest["price_cents"] if lowest else None,
         "historical_low_cents": hist_low,

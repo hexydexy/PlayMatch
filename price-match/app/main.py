@@ -5,10 +5,10 @@ from contextlib import asynccontextmanager
 
 from fastapi import Depends, FastAPI, Header, HTTPException, Query, Request, Response
 from fastapi.middleware.cors import CORSMiddleware
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
-from . import config, fx, metrics, regions, service
+from . import config, epic_lookup, fx, metrics, regions, service
 from .db import SessionLocal, get_session, init_db
 from .matcher import normalize
 from .models import Game, MatchCandidate
@@ -24,7 +24,7 @@ async def lifespan(app: FastAPI):
 
 app = FastAPI(title="PlayMatch price-match", version="0.2.0", lifespan=lifespan)
 app.add_middleware(CORSMiddleware, allow_origins=config.CORS_ORIGINS,
-                   allow_methods=["*"], allow_headers=["*"])
+                   allow_methods=["*"], allow_headers=["*"], expose_headers=["X-Total-Count"])
 
 
 @app.middleware("http")
@@ -43,6 +43,10 @@ async def observe(request: Request, call_next):
 
 
 def _game(s: Session, game_id: int) -> Game:
+    # An id outside a real database integer's range can never match a game; treat it the
+    # same as a missing one instead of letting it reach the driver and overflow (500).
+    if not (0 < game_id < 2**63):
+        raise HTTPException(404, "game not found")
     g = s.get(Game, game_id)
     if not g:
         raise HTTPException(404, "game not found")
@@ -92,10 +96,15 @@ def currencies():
 
 
 @app.get("/api/games")
-def search_games(q: str = Query("", max_length=100), limit: int = 20, s: Session = Depends(get_session)):
-    stmt = select(Game).order_by(Game.title).limit(min(limit, 50))
+def search_games(response: Response, q: str = Query("", max_length=100),
+                 limit: int = Query(20, ge=1, le=100), offset: int = Query(0, ge=0, le=2**31 - 1),
+                 s: Session = Depends(get_session)):
+    total = select(func.count(Game.id))
+    stmt = select(Game).order_by(Game.title, Game.id).limit(limit).offset(offset)
     if q:
-        stmt = stmt.where(Game.norm_title.contains(normalize(q)))
+        match = Game.norm_title.contains(normalize(q))
+        total, stmt = total.where(match), stmt.where(match)
+    response.headers["X-Total-Count"] = str(s.scalar(total))
     return [service.game_dict(g) for g in s.scalars(stmt)]
 
 
@@ -109,6 +118,12 @@ def prices(game_id: int, currency: str | None = None, region: str | None = None,
 def history(game_id: int, currency: str | None = None, region: str | None = None,
             days: int = Query(365, ge=1, le=3650), s: Session = Depends(get_session)):
     return service.history(s, _game(s, game_id), currency, days, _region(region))
+
+
+@app.post("/api/games/{game_id}/epic-check")
+def epic_check(game_id: int, region: str | None = None, s: Session = Depends(get_session)):
+    """Look up the Epic price for this game if it has not been checked recently."""
+    return epic_lookup.check_epic(s, _game(s, game_id), _region(region))
 
 
 # ---- admin: requires X-Admin-Token matching ADMIN_TOKEN ------------------
