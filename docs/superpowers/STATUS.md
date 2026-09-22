@@ -1,6 +1,6 @@
 # PlayMatch: where we stopped
 
-Written 2026-09-21, at the point a Claude usage limit interrupted the build. Branch: `steam-catalog` (`main` is still the original baseline commit, before any of this work).
+Written 2026-09-21 when a Claude usage limit interrupted the build, and updated later the same day in a second session that finished Plan 2's remaining tasks. Branch: `steam-catalog` (`main` is still the original baseline commit, before any of this work).
 
 ## What PlayMatch is now
 
@@ -17,30 +17,43 @@ Plans: `docs/superpowers/plans/2026-09-21-steam-catalog-pipeline.md` (Plan 1) an
 - GOG review queue is capped per run and de-duplicated; same-title games are never auto-linked to one GOG product.
 - `scripts/scale_test.py` benchmarks 100,000 games: search under 80 ms, GOG matching projects to about 89 s, so no extra index or matching change was needed.
 
-**Plan 2, Epic on demand and UI: 3 of 6 tasks done**
+**Plan 2, Epic on demand and UI: all 6 tasks implemented** (Tasks 1-3 reviewed; Tasks 4-6 are not independently reviewed — see below)
 - Task 1: `GET /api/games` is paged (`limit`, `offset`, `X-Total-Count` header).
 - Task 2: the prices response reports when each store was last checked (`checks`, `checked_at`).
 - Task 3: `POST /api/games/{id}/epic-check` with a per-game cooldown, a global rate cap and a 15-minute block when Epic rate limits us.
+- Task 4: the list loads 48 games a page with a "Load more" button and the whole-catalog count; a "Load more" that loses a race with a newer search is discarded. Added `scripts/seed_demo.py` (124-game demo database) and `scripts/browser_check.py` (Playwright).
+- Task 5: opening a game not checked in the last day shows a "Checking the Epic price…" row and calls the endpoint; `checked`/`fresh` re-renders quietly with the new prices, `busy`/`unavailable` explain in place. Each store row shows "Checked <date>" and flags a price over 14 days old.
+- Task 6: README API notes and browser-check instructions; two stale "Known limits" bullets corrected.
 
-Last full test run: 114 passed (see the flaky test below).
+Last full test run: 114 collected, 113 passed plus the known flake below. All 17 browser checks pass against a fresh demo database.
 
 ## Not done yet, in order
 
-1. **Task 4: "Load more" on the games list**, plus `scripts/seed_demo.py` and `scripts/browser_check.py` (Playwright checks). This was interrupted. The two script files exist as **untracked, unreviewed drafts** in `price-match/scripts/`; the frontend edits (`frontend/app.js`, `frontend/app.css`) were not started. They are deliberately NOT part of this commit.
-2. **Task 5:** profile page shows an "Epic price: checking..." row and calls the new endpoint; each store price shows "Checked <date>" and warns when older than 14 days.
-3. **Task 6:** README API notes, browser-check instructions, final verification.
+1. **`docker compose build` (Task 6, Step 5) has not been run** — Docker Desktop was not running on this machine. Nothing else in Task 6 is outstanding.
+2. **Task 6 cleanup:** the demo server may still be running on port 8765 and `price-match/demo.db` may still exist (git-ignored). Stop it and delete the file.
+3. **Tasks 4, 5 and 6 were implemented inline without the implementer/reviewer subagent pair the earlier tasks used, so they have had no independent task review.** Plan 2's final whole-branch review must cover them.
 4. A final whole-branch review of Plan 2, then a decision on merging `steam-catalog` into `main` (one merge, after both plans).
 
-The plan files hold the exact code, tests and commands for each of those tasks.
+The plan files hold the exact code, tests and commands for each task.
+
+## Rebuilding the test environment
+
+The venv from the first session was gone by the second. It is now at `./.venv` (git-ignored) and was built with:
+
+    python -m venv .venv
+    ./.venv/Scripts/python.exe -m pip install -r price-match/requirements.txt numpy playwright
+    ./.venv/Scripts/python.exe -m playwright install chromium
+
+Run tests from `price-match/` with `../.venv/Scripts/python.exe -m pytest -q`.
 
 ## Before this is used for real
 
-- **Steam API key:** not yet used. Catalog sync needs a free key in `.env` as `STEAM_API_KEY`. The first real run must confirm Steam's response shape and find the largest working batch size (`python -m app.bulk --probe`); steps are in the README ("First run with a key"). Do not enable the key on a real deployment until Plan 2's UI is finished, otherwise the list shows only the first 50 of about 100,000 games.
+- **Steam API key:** not yet used. Catalog sync needs a free key in `.env` as `STEAM_API_KEY`. The first real run must confirm Steam's response shape and find the largest working batch size (`python -m app.bulk --probe`); steps are in the README ("First run with a key"). The UI blocker on this is now gone: the list pages through the whole catalog.
 - **Steam rate limits are unmeasured.** If Steam throttles, the daily run stops and resumes next day, so a first full pass may take several days.
 
 ## Known problems (not fixed)
 
-- **Flaky test:** `test_history_stats_and_historical_low` fails about half the runs on Windows (three snapshots created in a row get identical timestamps). It existed before this work; it is a test problem, not a product problem.
+- **Flaky test:** `test_history_stats_and_historical_low` fails on Windows — sometimes about half the runs, and in the second session five runs in a row. It existed before this work and no backend file has changed since, so it is not a regression. Cause, now pinned down: the test records three snapshots (2000, 1000, 1500) back to back, Windows clock resolution gives them one identical timestamp, and `current_prices` picks the newest snapshot by time with no id tiebreaker, so it can return the 1000 sample and report `at_historical_low` as true. Real snapshots are a day apart, so it does not affect the product; ordering by `(created_at DESC, id DESC)` would fix both the test and the latent ambiguity.
 - **FX rates cannot update:** `api.frankfurter.app` now redirects (HTTP 301) and `fx.refresh` does not follow redirects, so exchange rates are never refreshed. This predates this work. US/USD is unaffected; currency conversion for other currencies needs a fix (new URL `api.frankfurter.dev/v1/latest` plus following redirects).
 - Frontend still says "Samples are recorded once a day", and the stats table averages are sample-weighted, which is skewed now that Steam prices are stored only on change.
 - Smaller deferred items are listed at the bottom.
