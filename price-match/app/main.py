@@ -43,6 +43,10 @@ async def observe(request: Request, call_next):
 
 
 def _game(s: Session, game_id: int) -> Game:
+    # An id outside a real database integer's range can never match a game; treat it the
+    # same as a missing one instead of letting it reach the driver and overflow (500).
+    if not (0 < game_id < 2**63):
+        raise HTTPException(404, "game not found")
     g = s.get(Game, game_id)
     if not g:
         raise HTTPException(404, "game not found")

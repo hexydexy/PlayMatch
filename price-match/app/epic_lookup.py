@@ -71,6 +71,7 @@ def check_epic(s: Session, game: Game, region: str, connector=None, gate: Gate |
     except IntegrityError:
         # Another request for the same game/region won this race and already committed
         # the listing/snapshot; treat this one as if it arrived just after that one did.
+        log.warning("epic check for game %s lost a write race; reporting fresh", game.id)
         s.rollback()
         row = s.get(PriceCheck, (game.id, "epic", region))
         return {"status": "fresh", "checked_at": _iso(row)}
@@ -83,6 +84,7 @@ def check_epic(s: Session, game: Game, region: str, connector=None, gate: Gate |
     try:
         service.mark_checked(s, [game.id], "epic", region, now)
     except IntegrityError:
+        log.warning("epic check for game %s lost a write race; reporting fresh", game.id)
         s.rollback()
         row = s.get(PriceCheck, (game.id, "epic", region))
         return {"status": "fresh", "checked_at": _iso(row)}

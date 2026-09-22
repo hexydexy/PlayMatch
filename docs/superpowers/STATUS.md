@@ -25,13 +25,16 @@ Plans: `docs/superpowers/plans/2026-09-21-steam-catalog-pipeline.md` (Plan 1) an
 - Task 5: opening a game not checked in the last day shows a "Checking the Epic price…" row and calls the endpoint; `checked`/`fresh` re-renders quietly with the new prices, `busy`/`unavailable` explain in place. Each store row shows "Checked <date>" and flags a price over 14 days old.
 - Task 6: README API notes and browser-check instructions; two stale "Known limits" bullets corrected.
 
-Last full test run: 114 collected, 113 passed plus the known flake below. All 17 browser checks pass against a fresh demo database.
+Last full test run: 118 collected, 117 passed plus the known flake below (the two review rounds added regression tests for the epic-check race, the offset overflow and the game_id overflow). All 17 browser checks pass against a fresh demo database.
 
 ## Not done yet, in order
 
-1. **Plan 2 (Tasks 1-6) is fully implemented.** `docker compose build` succeeded for all three images (`price-match`, `scheduler`, `frontend`) once Docker Desktop was started; the demo server and `price-match/demo.db` were cleaned up afterwards.
-2. **Tasks 4, 5 and 6 were implemented inline without the implementer/reviewer subagent pair the earlier tasks used, so they had no independent task review as they landed.** A final whole-branch review is in progress to cover them, dispatched as two parallel subagents (frontend + scripts; backend + tests/README/Docker/gitignore), base `6cb22e8` (the commit `main` is still on) to the branch head. If this file still says "in progress" when you read it, check whether that review finished; if it did, its verdict and any fix rounds it triggered should be folded into this file before merging.
-3. Once the review is clean, merge `steam-catalog` into `main` (one merge, after both plans, as decided at the start of this work).
+1. **Plan 2 (Tasks 1-6) is fully implemented.** `docker compose build` succeeds for all three images (`price-match`, `scheduler`, `frontend`).
+2. **The final whole-branch review (covering Tasks 4-6, which had no independent task review as they landed) is done, in two rounds:**
+   - Round 1: two parallel subagents reviewed the whole branch (base `6cb22e8` to the branch head), 0 Critical, 9 Important between them. All 9 were fixed in one pass, plus a converged recommendation to relabel the history table's "Average" column (as "Average per sample") and correct its stale companion sentence, rather than change the underlying calculation before merge.
+   - Round 2: a scoped re-review of that fix commit found one regression it introduced (the quiet Epic-check re-render captured/restored scroll and focus around the async fetch instead of only the synchronous DOM swap, so a user's own scrolling during that window got silently undone) and one pre-existing gap of the same class as an already-fixed one (`game_id` path parameters on `/prices`, `/history` and `/epic-check` had the same unbounded-integer overflow the `offset` query parameter had). Both are now fixed and covered by tests; the round's other small findings (a log line on the caught race, an offset upper bound in the README, the `fresh` status description, this file's own stale references) are folded in below.
+   - If you are resuming this and it's unclear whether a further round is needed, check this file's own consistency (it should not describe a review as pending) and re-run the full suite plus browser checks before assuming it's still clean.
+3. Merge `steam-catalog` into `main` (one merge, after both plans, as decided at the start of this work).
 
 The plan files hold the exact code, tests and commands for each task.
 
@@ -54,7 +57,7 @@ Run tests from `price-match/` with `../.venv/Scripts/python.exe -m pytest -q`.
 
 - **Flaky test:** `test_history_stats_and_historical_low` fails on Windows — sometimes about half the runs, and in the second session five runs in a row. It existed before this work and no backend file has changed since, so it is not a regression. Cause, now pinned down: the test records three snapshots (2000, 1000, 1500) back to back, Windows clock resolution gives them one identical timestamp, and `current_prices` picks the newest snapshot by time with no id tiebreaker, so it can return the 1000 sample and report `at_historical_low` as true. Real snapshots are a day apart, so it does not affect the product; ordering by `(created_at DESC, id DESC)` would fix both the test and the latent ambiguity.
 - **FX rates cannot update:** `api.frankfurter.app` now redirects (HTTP 301) and `fx.refresh` does not follow redirects, so exchange rates are never refreshed. This predates this work. US/USD is unaffected; currency conversion for other currencies needs a fix (new URL `api.frankfurter.dev/v1/latest` plus following redirects).
-- Frontend still says "Samples are recorded once a day", and the stats table averages are sample-weighted, which is skewed now that Steam prices are stored only on change.
+- The history table's "Average per sample" column is a plain mean over stored snapshots, not time-weighted; since snapshots are stored only on change, a price that holds for months counts once while a brief sale that flips twice counts twice. Column relabeled and captioned in the README; the fix (a time-weighted average in `service.history`) is deferred, deliberately, so as not to touch the code path the flaky history test lives in on the eve of a merge.
 - Smaller deferred items are listed at the bottom.
 
 ## Decisions made on your behalf during the build (each one is reversible)

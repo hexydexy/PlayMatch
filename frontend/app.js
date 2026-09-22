@@ -101,6 +101,7 @@ function route() {
   if (state.view === "list") state.scrollY = window.scrollY;   // remember where the list was
   const m = /^#\/game\/(\d+)\/?$/.exec(location.hash);
   const seq = ++state.seq;
+  announce("");   // a stale or repeated Epic-check announcement should not linger or go unheard on the new page
   if (m) { state.view = "game"; state.gameId = +m[1]; state.epicTried = null; showGame(seq); }
   else { state.view = "list"; showList(); }
   syncNav();
@@ -213,10 +214,14 @@ async function showGame(seq, keepScroll, quiet) {
     if (seq !== state.seq) return;
     const epicKey = `${id}:${state.region}`;
     const lookup = !quiet && needsEpicCheck(p) && state.epicTried !== epicKey;
+    // Capture right before the DOM swap and restore right after it, not around the fetch above:
+    // that window is synchronous, so nothing the user does in between can be clobbered.
+    const restore = quiet ? captureViewState() : null;
     document.title = `${p.game.title} – PlayMatch`;
     view.innerHTML = renderProfile(p, h, lookup ? "checking" : null);
     const model = buildModel(h, p);
     if (model) mountChart($("#chart"), model, h.currency, p.game.title);
+    if (restore) restoreViewState(restore);
     if (!quiet && !keepScroll) focusHeading();
     if (lookup) { state.epicTried = epicKey; announce(EPIC_NOTE.checking); runEpicCheck(seq); }
   } catch (e) {
@@ -261,9 +266,7 @@ async function runEpicCheck(seq) {
   if (seq !== state.seq) return;
   if (status === "checked" || status === "fresh") {
     announce("Epic price checked.");
-    const restore = captureViewState();
-    await showGame(seq, true, true);   // re-render with the new prices
-    if (seq === state.seq) restoreViewState(restore);
+    showGame(seq, true, true);   // re-render with the new prices; showGame itself preserves scroll/focus/details
     return;
   }
   announce(EPIC_NOTE[status] || EPIC_NOTE.unavailable);

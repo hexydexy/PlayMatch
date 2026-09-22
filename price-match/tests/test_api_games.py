@@ -44,6 +44,16 @@ def test_a_huge_offset_is_rejected_rather_than_overflowing_the_database_column(a
     assert api.get("/api/games", params={"offset": 2**31 - 1}).status_code == 200
 
 
+def test_a_huge_game_id_is_404_not_a_database_overflow(api, db_session):
+    # Same overflow as a huge offset, reached through the game_id path parameter instead:
+    # an id this large can never match a real game, so it must be treated as missing.
+    for path in ("/api/games/{}/prices", "/api/games/{}/history", "/api/games/{}/epic-check"):
+        method = api.post if path.endswith("epic-check") else api.get
+        assert method(path.format(2**63)).status_code == 404
+        assert method(path.format(0)).status_code == 404
+        assert method(path.format(-1)).status_code == 404
+
+
 def test_default_limit_is_20(api, db_session):
     add_games(db_session, 30)
     assert len(api.get("/api/games").json()) == 20
