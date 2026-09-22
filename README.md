@@ -22,6 +22,20 @@ Hash-routed single page: `#/` is the games list (search + cover-art grid) and `#
 - **History chart:** every sample is a marker, drawn as a step line (a price holds until the next sample). Date labels sit on real sample dates when they fit, otherwise on evenly spaced dates. Hover or use the arrow keys to read every store's price on a sample date. "All sample dates" lists them as a table.
 - **Fonts** (Bricolage Grotesque, Instrument Sans) are self-hosted in `frontend/fonts/`, so the page makes no third-party font requests. Cover art is the one external request (Steam's CDN).
 
+## API notes
+- `GET /api/games?q=&limit=&offset=`: `limit` 1 to 100 (default 20), `offset` from 0. The body is a list; the number of games matching `q` is in the `X-Total-Count` header.
+- `GET /api/games/{id}/prices` also returns `checks` (`steam`, `gog`, `epic`: when each store was last checked, or `null`) and a `checked_at` on every store row. Snapshots are stored only when a price changes, so `checked_at` can be newer than the snapshot it belongs to.
+- `POST /api/games/{id}/epic-check?region=US` looks up the Epic price if the game was not checked in the last `EPIC_COOLDOWN_HOURS`. It returns `{"status": ..., "checked_at": ...}` with status `fresh` (no request made), `checked`, `busy` (over `EPIC_ON_DEMAND_PER_MINUTE` in this process) or `unavailable` (Epic rate limited us, so lookups pause for 15 minutes, or the lookup failed). A game Epic does not list still counts as checked, so it is not searched again within the cooldown. The limiter is per process: with several API workers each has its own limit.
+
+### Browser checks
+    cd price-match
+    pip install playwright && python -m playwright install chromium
+    DATABASE_URL=sqlite:///demo.db python -m scripts.seed_demo
+    DATABASE_URL=sqlite:///demo.db FRONTEND_DIR=../frontend python -m uvicorn app.main:app --port 8765
+    python -m scripts.browser_check http://localhost:8765/      # in another terminal
+
+The checks intercept every Epic lookup, so they never contact Epic. Delete `demo.db` afterwards.
+
 ## Data sources
 | Store | How | Notes |
 | --- | --- | --- |
@@ -92,6 +106,7 @@ To repeat the benchmark, run from `price-match/`:
 ## Known limits
 - History conversion uses the latest FX rate, not the rate at capture time.
 - Steam/Epic connectors depend on unofficial endpoints and can break without notice.
-- Non-seed games get no Epic prices from the daily job, so they have no Epic history unless an admin refreshes them.
+- The daily job only prices the seed games on Epic. Other games get an Epic price when someone opens the game in the UI, so their Epic history has gaps.
 - GOG links for catalog games are title-only: a game whose exact normalized title is shared with other Steam games is queued for review instead of linking automatically, and a GOG product that already belongs to one game is never attached to another.
-- A game delisted from Steam keeps its last stored price. The time it was last checked is stored (`price_checks`) but not shown in the UI yet.
+- A game delisted from Steam keeps its last stored price. The profile shows when each store was last checked and flags a price older than 14 days, so a stale price is visible rather than silent.
+- Two people opening the same never-checked game at the same instant can trigger two Epic searches (the global cap still applies).
