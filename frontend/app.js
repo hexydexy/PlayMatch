@@ -14,7 +14,7 @@ const store = {
   get: k => { try { return localStorage.getItem(k); } catch { return null; } },
   set: (k, v) => { try { localStorage.setItem(k, v); } catch {} },
 };
-const state = {view: null, seq: 0, searchSeq: 0, q: "", games: null, scrollY: 0,
+const state = {view: null, seq: 0, searchSeq: 0, searching: false, q: "", games: null, total: 0, scrollY: 0,
                gameId: null, region: "US", regions: [], currency: "USD", ro: null};
 
 const esc = s => String(s ?? "").replace(/[&<>"']/g, c => ({"&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;"}[c]));
@@ -104,6 +104,14 @@ const focusHeading = () => { const h = $("h1", view); if (h) { h.tabIndex = -1; 
 
 /* ---- games list --------------------------------------------------------- */
 
+const PAGE = 48;
+
+async function getPage(q, offset) {
+  const r = await fetch(`${API}/games?limit=${PAGE}&offset=${offset}&q=${encodeURIComponent(q)}`);
+  if (!r.ok) throw new Error(r.status);
+  return {games: await r.json(), total: Number(r.headers.get("X-Total-Count")) || 0};
+}
+
 function showList() {
   document.title = "PlayMatch";
   if (state.ro) { state.ro.disconnect(); state.ro = null; }
@@ -115,6 +123,7 @@ function showList() {
     </section>
     <p id="count" class="count muted" role="status"></p>
     <ul id="grid" class="grid"></ul>
+    <div id="more-wrap" class="more-wrap"></div>
     <div id="notice"></div>
   </div>`;
   const q = $("#q");
@@ -131,28 +140,50 @@ function showList() {
 async function search(q) {
   state.q = q;
   const n = ++state.searchSeq;
+  state.searching = true;
   try {
-    const games = await get(`/games?limit=50&q=${encodeURIComponent(q)}`);
+    const {games, total} = await getPage(q, 0);
     if (n !== state.searchSeq || state.view !== "list") return;
-    state.games = games;
+    state.games = games; state.total = total;
     renderGrid();
   } catch {
     if (n !== state.searchSeq || state.view !== "list") return;
-    $("#grid").innerHTML = ""; $("#count").textContent = "";
+    $("#grid").innerHTML = ""; $("#count").textContent = ""; $("#more-wrap").innerHTML = "";
     $("#notice").innerHTML = `<div class="notice"><strong>Can't reach the price service</strong>
       <p>Check that PlayMatch is running, then try again.</p><button class="btn" id="retry">Try again</button></div>`;
     $("#retry").onclick = () => search(state.q);
+  } finally {
+    if (n === state.searchSeq) state.searching = false;
+  }
+}
+
+async function loadMore() {
+  if (state.searching) return;
+  const seq = state.searchSeq, shown = state.games.length, btn = $("#more");
+  btn.disabled = true; btn.textContent = "Loading…";
+  try {
+    const {games, total} = await getPage(state.q, shown);
+    if (seq !== state.searchSeq || state.view !== "list") return;   // a newer search replaced this list
+    state.games = state.games.concat(games); state.total = total;
+    renderGrid();
+    const first = view.querySelectorAll("#grid .game")[shown];
+    if (first) first.focus({preventScroll: true});
+  } catch {
+    if (seq === state.searchSeq && btn.isConnected) { btn.disabled = false; btn.textContent = "Couldn't load more. Try again"; }
   }
 }
 
 function renderGrid() {
-  const games = state.games || [];
+  const games = state.games || [], total = state.total.toLocaleString();
   $("#notice").innerHTML = "";
   $("#count").textContent = state.q
-    ? `${games.length} ${games.length === 1 ? "game matches" : "games match"} “${state.q}”`
-    : `${games.length} tracked ${games.length === 1 ? "game" : "games"}`;
+    ? `${total} ${state.total === 1 ? "game matches" : "games match"} “${state.q}”`
+    : `${total} tracked ${state.total === 1 ? "game" : "games"}`;
   $("#grid").innerHTML = games.map(g => `<li><a class="game" href="#/game/${g.id}">${art(g)}
       <span class="game-body"><span class="game-title">${esc(g.title)}</span><span class="game-year">${g.release_year ?? ""}</span></span></a></li>`).join("");
+  $("#more-wrap").innerHTML = games.length < state.total
+    ? `<button class="btn more" id="more">Load more</button><p class="muted">Showing ${games.length.toLocaleString()} of ${total}</p>` : "";
+  const more = $("#more"); if (more) more.onclick = loadMore;
   if (!games.length) $("#notice").innerHTML = state.q
     ? `<div class="notice"><strong>No tracked game matches “${esc(state.q)}”</strong><p>Check the spelling, or try a shorter title.</p></div>`
     : `<div class="notice"><strong>No games are tracked yet</strong><p>Seed the list with <code>snapshot --seed</code>, or add a game through the admin API.</p></div>`;

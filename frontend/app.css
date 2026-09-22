@@ -66,7 +66,11 @@ select:hover{border-color:var(--slate)}
 .search{display:block;width:100%;max-width:640px;margin-top:26px;padding:15px 18px;font-size:1.05rem;background:var(--surface);border:1.5px solid var(--ink);border-radius:10px}
 .search::placeholder{color:var(--slate)}
 .count{margin:22px 0 14px}
-.grid{list-style:none;margin:0;padding:0 0 72px;display:grid;grid-template-columns:repeat(auto-fill,minmax(230px,1fr));gap:20px}
+.grid{list-style:none;margin:0;padding:0 0 32px;display:grid;grid-template-columns:repeat(auto-fill,minmax(230px,1fr));gap:20px}
+.more-wrap{text-align:center;padding-bottom:72px}
+.more-wrap:empty{padding-bottom:40px}
+.more-wrap p{margin-top:10px}
+.btn:disabled{opacity:.6;cursor:default}
 .game{display:block;text-decoration:none;background:var(--surface);border:1px solid var(--line);border-radius:10px;overflow:hidden;height:100%}
 .game:hover{border-color:var(--ink)}
 .game:hover .game-title{text-decoration:underline;text-underline-offset:3px}
