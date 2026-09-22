@@ -29,10 +29,9 @@ Last full test run: 114 collected, 113 passed plus the known flake below. All 17
 
 ## Not done yet, in order
 
-1. **`docker compose build` (Task 6, Step 5) has not been run** — Docker Desktop was not running on this machine. Nothing else in Task 6 is outstanding.
-2. **Task 6 cleanup:** the demo server may still be running on port 8765 and `price-match/demo.db` may still exist (git-ignored). Stop it and delete the file.
-3. **Tasks 4, 5 and 6 were implemented inline without the implementer/reviewer subagent pair the earlier tasks used, so they have had no independent task review.** Plan 2's final whole-branch review must cover them.
-4. A final whole-branch review of Plan 2, then a decision on merging `steam-catalog` into `main` (one merge, after both plans).
+1. **Plan 2 (Tasks 1-6) is fully implemented.** `docker compose build` succeeded for all three images (`price-match`, `scheduler`, `frontend`) once Docker Desktop was started; the demo server and `price-match/demo.db` were cleaned up afterwards.
+2. **Tasks 4, 5 and 6 were implemented inline without the implementer/reviewer subagent pair the earlier tasks used, so they had no independent task review as they landed.** A final whole-branch review is in progress to cover them, dispatched as two parallel subagents (frontend + scripts; backend + tests/README/Docker/gitignore), base `6cb22e8` (the commit `main` is still on) to the branch head. If this file still says "in progress" when you read it, check whether that review finished; if it did, its verdict and any fix rounds it triggered should be folded into this file before merging.
+3. Once the review is clean, merge `steam-catalog` into `main` (one merge, after both plans, as decided at the start of this work).
 
 The plan files hold the exact code, tests and commands for each task.
 
