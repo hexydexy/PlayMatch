@@ -123,6 +123,7 @@ select:hover{border-color:var(--slate)}
 .prices .go{white-space:nowrap}
 .prices .go a{font-weight:600}
 .conv{display:block;margin-top:4px}
+.stale{color:var(--ink);font-weight:600}
 
 /* ---- history chart ----------------------------------------------------- */
 .legend{display:flex;flex-wrap:wrap;gap:6px 18px;margin:0 0 6px;padding:0;list-style:none;font-size:.9rem}

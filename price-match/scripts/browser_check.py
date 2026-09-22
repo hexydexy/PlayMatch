@@ -65,11 +65,95 @@ def check_list(p):
           f"{cards(p)} cards, {p.inner_text('#count')}")
 
 
+def game_id(p, query):
+    return p.evaluate("q => fetch('/api/games?q=' + encodeURIComponent(q)).then(r => r.json()).then(g => g[0].id)", query)
+
+
+def open_game(p, gid):
+    """Open a profile. Going through the list first guarantees the hash changes, so the router always runs."""
+    p.goto(BASE + "#/")
+    p.goto(BASE + f"#/game/{gid}")
+
+
+def check_profile(p):
+    posts = []
+    p.on("request", lambda r: posts.append(r.url) if r.method == "POST" and "epic-check" in r.url else None)
+    state = {"status": "unavailable"}
+
+    def fulfill(route):
+        route.fulfill(status=200, content_type="application/json",
+                      body=json.dumps({"status": state["status"], "checked_at": None}))
+
+    p.route("**/epic-check*", fulfill)
+    fresh, hades, old, free = (game_id(p, n) for n in ("Fresh Steam Only", "Hades", "Old Price Game", "Free Game"))
+
+    # A game whose Epic price was never checked: shows "checking", then the outcome.
+    open_game(p, fresh)
+    p.wait_for_selector("#epic-row")
+    check("a placeholder Epic row says it is checking", "Checking" in p.inner_text("#epic-row"), p.inner_text("#epic-row"))
+    p.wait_for_function("document.querySelector('#epic-row') && /unavailable/.test(document.querySelector('#epic-row').innerText)")
+    check("an unavailable Epic price is explained", "Open this game again later" in p.inner_text("#epic-row"))
+    check("exactly one Epic lookup was requested", len(posts) == 1, str(len(posts)))
+
+    state["status"] = "busy"
+    open_game(p, fresh)
+    p.wait_for_function("document.querySelector('#epic-row') && /busy/.test(document.querySelector('#epic-row').innerText)")
+    check("a busy Epic lookup says to try again in a minute", "in a minute" in p.inner_text("#epic-row"))
+
+    # 'checked' re-renders with refreshed data and must not loop.
+    state["status"] = "checked"
+    before = len(posts)
+    open_game(p, fresh)
+    p.wait_for_selector("#epic-row")
+    p.wait_for_function("!document.querySelector('#epic-row')")
+    p.wait_for_timeout(1500)
+    check("a checked lookup refreshes the page and does not ask again", len(posts) == before + 1, f"{len(posts) - before} requests")
+
+    # A game whose Epic price was checked recently: no lookup at all.
+    before = len(posts)
+    open_game(p, hades)
+    p.wait_for_selector(".prices")
+    p.wait_for_timeout(1200)
+    check("a recently checked game makes no Epic request", len(posts) == before and p.locator("#epic-row").count() == 0)
+
+    # Stale Steam price.
+    open_game(p, old)
+    p.wait_for_selector(".prices")
+    check("a price checked over 14 days ago says it may be out of date", "may be out of date" in p.inner_text(".prices"))
+    open_game(p, hades)
+    p.wait_for_selector(".prices")
+    check("a recent price shows its check date and no warning",
+          "Checked" in p.inner_text(".prices") and "out of date" not in p.inner_text(".prices"))
+
+    # No prices at all and an Epic lookup pending: the prices section still appears.
+    state["status"] = "unavailable"
+    open_game(p, free)
+    p.wait_for_selector("#epic-row")
+    check("a game with no prices still shows the Epic row while checking", p.locator(".prices").count() == 1)
+
+    # Regression: the back link keeps the search and scroll.
+    p.goto(BASE + "#/")
+    p.wait_for_selector("#grid .game")
+    p.fill("#q", "")
+    wait_cards(p, 48)   # start from a clean list so the check below is not trivially true
+    p.fill("#q", "hades")
+    wait_cards(p, 1)
+    p.click("#grid .game")
+    p.wait_for_selector(".back")
+    p.click(".back")
+    p.wait_for_selector("#grid .game")
+    check("All games returns to the same search", p.input_value("#q") == "hades" and cards(p) == 1)
+
+
 def main():
     with sync_playwright() as pw:
         browser = pw.chromium.launch()
         page = browser.new_page(viewport={"width": 1280, "height": 900})
+        page.add_init_script("""(() => { const f = window.fetch;
+            window.fetch = (u, ...a) => String(u).includes('epic-check')
+              ? new Promise(r => setTimeout(r, 700)).then(() => f(u, ...a)) : f(u, ...a); })()""")
         check_list(page)
+        check_profile(page)
         browser.close()
     print(f"\n{len(failures)} failed" if failures else "\nall checks passed")
     sys.exit(1 if failures else 0)

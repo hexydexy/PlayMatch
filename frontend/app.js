@@ -19,6 +19,8 @@ const state = {view: null, seq: 0, searchSeq: 0, searching: false, q: "", games:
 
 const esc = s => String(s ?? "").replace(/[&<>"']/g, c => ({"&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;"}[c]));
 const get = async p => { const r = await fetch(API + p); if (!r.ok) throw new Error(r.status); return r.json(); };
+const post = async p => { const r = await fetch(API + p, {method: "POST"}); if (!r.ok) throw new Error(r.status); return r.json(); };
+const EPIC_STALE_MS = 24 * 3600e3, OLD_PRICE_MS = 14 * 24 * 3600e3;
 const money = (c, cur, compact) => c == null ? "—" : new Intl.NumberFormat(undefined,
   {style: "currency", currency: cur, ...(compact && c % 100 === 0 ? {minimumFractionDigits: 0, maximumFractionDigits: 0} : {})}).format(c / 100);
 const fmtDate = (t, year) => new Intl.DateTimeFormat(undefined, {month: "short", day: "numeric", ...(year ? {year: "numeric"} : {})}).format(t);
@@ -193,19 +195,23 @@ function renderGrid() {
 
 const backLink = `<a class="back" href="#/"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M10 3 5 8l5 5"/></svg>All games</a>`;
 
-async function showGame(seq, keepScroll) {
+async function showGame(seq, keepScroll, quiet) {
   if (state.ro) { state.ro.disconnect(); state.ro = null; }
-  if (!keepScroll) window.scrollTo(0, 0);
-  view.innerHTML = `<div class="wrap">${backLink}<p class="loading" role="status">Loading prices…</p></div>`;
+  if (!quiet) {
+    if (!keepScroll) window.scrollTo(0, 0);
+    view.innerHTML = `<div class="wrap">${backLink}<p class="loading" role="status">Loading prices…</p></div>`;
+  }
   const id = state.gameId, qs = `currency=${state.currency}&region=${state.region}`;
   try {
     const [p, h] = await Promise.all([get(`/games/${id}/prices?${qs}`), get(`/games/${id}/history?${qs}&days=365`)]);
     if (seq !== state.seq) return;
+    const lookup = !quiet && needsEpicCheck(p);
     document.title = `${p.game.title} – PlayMatch`;
-    view.innerHTML = renderProfile(p, h);
+    view.innerHTML = renderProfile(p, h, lookup ? "checking" : null);
     const model = buildModel(h, p);
     if (model) mountChart($("#chart"), model, h.currency, p.game.title);
-    if (!keepScroll) focusHeading();
+    if (!quiet && !keepScroll) focusHeading();
+    if (lookup) runEpicCheck(seq);
   } catch (e) {
     if (seq !== state.seq) return;
     const missing = e.message === "404";
@@ -216,9 +222,30 @@ async function showGame(seq, keepScroll) {
   }
 }
 
+// The Epic price is fetched when a game is opened and it was not checked in the last day.
+function needsEpicCheck(p) {
+  const t = p.checks && p.checks.epic;
+  return !t || Date.now() - Date.parse(t) > EPIC_STALE_MS;
+}
+
+const EPIC_NOTE = {
+  checking: "Checking the Epic price…",
+  busy: "Epic lookups are busy. Open this game again in a minute.",
+  unavailable: "Epic price unavailable right now. Open this game again later.",
+};
+
+async function runEpicCheck(seq) {
+  let status = "unavailable";
+  try { status = (await post(`/games/${state.gameId}/epic-check?region=${state.region}`)).status; } catch {}
+  if (seq !== state.seq) return;
+  if (status === "checked" || status === "fresh") { showGame(seq, true, true); return; }   // re-render with the new prices
+  const cell = $("#epic-row td.muted");
+  if (cell) { cell.removeAttribute("role"); cell.textContent = EPIC_NOTE[status] || EPIC_NOTE.unavailable; }
+}
+
 const ptag = (cents, cur, cls = "") => `<span class="ptag ${cls}">${money(cents, cur)}</span>`;
 
-function renderProfile(p, h) {
+function renderProfile(p, h, epic) {
   const g = p.game, cur = p.currency;
   const best = p.prices.find(r => r.is_lowest) || p.prices[0];
   const safeArt = g.image_url && /^https:\/\/[^\s'"()]+$/.test(g.image_url) ? `style="--art:url(${g.image_url})"` : "";
@@ -233,18 +260,25 @@ function renderProfile(p, h) {
   return `<section class="pf-head" ${safeArt}><div class="wrap">${backLink}
       <div class="pf-grid"><div class="pf-cover">${art(g, "", true)}</div>
         <div><h1>${esc(g.title)}</h1>${g.release_year ? `<p class="pf-year">${g.release_year}</p>` : ""}${headInfo}</div></div></div></section>
-    <div class="wrap pf-body">${p.prices.length ? pricesPanel(p) : ""}${historyPanel(h, p)}</div>`;
+    <div class="wrap pf-body">${p.prices.length || epic ? pricesPanel(p, epic) : ""}${historyPanel(h, p)}</div>`;
 }
 
-function pricesPanel(p) {
-  const rows = p.prices.map(r => `<tr>
+function pricesPanel(p, epic) {
+  const rows = p.prices.map(r => {
+    const old = r.checked_at && Date.now() - Date.parse(r.checked_at) > OLD_PRICE_MS;
+    const checked = r.checked_at ? `<span class="conv muted ${old ? "stale" : ""}">${old ? "Price may be out of date. " : ""}Checked ${fmtDate(Date.parse(r.checked_at), true)}</span>` : "";
+    return `<tr>
     <td><span class="store-name">${esc(r.store)}</span><span class="kind ${r.store_type === "marketplace" ? "mk" : ""}">${esc(r.label)}</span></td>
     <td>${ptag(r.price_cents, r.currency, r.is_lowest ? "is-low" : "")}${r.is_lowest ? `<span class="vh"> lowest</span>` : ""}
       ${r.discount_pct ? `<span class="was">${money(r.base_price_cents, r.currency)}</span><span class="off">−${r.discount_pct}%</span>` : ""}
-      ${r.converted ? `<span class="conv muted">converted from ${money(r.native_price_cents, r.native_currency)}</span>` : ""}</td>
-    <td class="go">${r.url ? `<a href="${esc(r.url)}" target="_blank" rel="noopener noreferrer">View<span class="vh"> ${esc(p.game.title)} on ${esc(r.store)}</span></a>` : ""}</td></tr>`).join("");
+      ${r.converted ? `<span class="conv muted">converted from ${money(r.native_price_cents, r.native_currency)}</span>` : ""}${checked}</td>
+    <td class="go">${r.url ? `<a href="${esc(r.url)}" target="_blank" rel="noopener noreferrer">View<span class="vh"> ${esc(p.game.title)} on ${esc(r.store)}</span></a>` : ""}</td></tr>`;
+  }).join("");
+  const hasEpic = p.prices.some(r => r.store_id === "epic");
+  const epicRow = epic && !hasEpic
+    ? `<tr id="epic-row"><td><span class="store-name">Epic Games</span></td><td colspan="2" class="muted" ${epic === "checking" ? 'role="status"' : ""}>${EPIC_NOTE[epic]}</td></tr>` : "";
   return `<section class="panel"><div class="panel-head"><h2>Prices by store</h2></div>
-    <div class="scroll"><table class="prices"><thead><tr><th>Store</th><th>Price</th><th><span class="vh">Link</span></th></tr></thead><tbody>${rows}</tbody></table></div></section>`;
+    <div class="scroll"><table class="prices"><thead><tr><th>Store</th><th>Price</th><th><span class="vh">Link</span></th></tr></thead><tbody>${rows}${epicRow}</tbody></table></div></section>`;
 }
 
 /* ---- price history ------------------------------------------------------ */
